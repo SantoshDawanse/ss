@@ -142,6 +142,27 @@ export class LessonRepository extends BaseRepository<LessonRow> {
   }
 
   /**
+   * Find lessons by bundle ID and subject.
+   */
+  public async findByBundleAndSubject(
+    bundleId: string,
+    subject: string,
+  ): Promise<LessonRow[]> {
+    try {
+      const result = await this.query(
+        `SELECT * FROM ${this.tableName} 
+        WHERE bundle_id = ? AND subject = ?`,
+        [bundleId, subject],
+      );
+
+      return this.resultSetToArray(result);
+    } catch (error) {
+      console.error('Error finding lessons by bundle and subject:', error);
+      throw new Error(`Failed to find lessons: ${error}`);
+    }
+  }
+
+  /**
    * Parse lesson content from JSON.
    */
   public parseLesson(row: LessonRow): Lesson {

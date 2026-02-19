@@ -225,7 +225,7 @@ This implementation plan follows a phased approach, starting with core infrastru
     - Provide encouragement messages
     - _Requirements: 3.7_
   
-  - [ ]* 11.4 Write property test for offline content delivery
+  - [x] 11.4 Write property test for offline content delivery
     - **Property 6: Offline Content Delivery**
     - **Validates: Requirements 3.1**
   
