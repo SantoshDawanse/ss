@@ -1,0 +1,29 @@
+{
+  "agent_id": "DMXQHRYUOL",
+  "agent_name": "sikshya-sathi-content-generator-dev",
+  "alias_id": "GMXFCP0RCY",
+  "alias_name": "dev-alias",
+  "action_groups": [
+    {
+      "name": "GenerateLesson",
+      "id": "XY4TPJQNDF"
+    },
+    {
+      "name": "GenerateQuiz",
+      "id": "NOUNUMLCBU"
+    },
+    {
+      "name": "GenerateHints",
+      "id": "GFFIWHFUYO"
+    },
+    {
+      "name": "GenerateRevisionPlan",
+      "id": "0SXWOLX8QK"
+    },
+    {
+      "name": "GenerateStudyTrack",
+      "id": "VT1LKNQHH6"
+    }
+  ],
+  "region": "us-east-1"
+}

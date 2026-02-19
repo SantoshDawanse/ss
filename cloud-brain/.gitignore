@@ -1,0 +1,5 @@
+infrastructure/cdk.out
+**/__pycache__
+.hypothesis
+.pytest_cache
+.DS_Store

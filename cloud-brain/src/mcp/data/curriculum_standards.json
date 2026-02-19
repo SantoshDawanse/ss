@@ -1,0 +1,322 @@
+[
+  {
+    "id": "MATH-6-001",
+    "grade": 6,
+    "subject": "Mathematics",
+    "topic": "Whole Numbers and Operations",
+    "learning_objectives": [
+      "Perform operations with large whole numbers",
+      "Apply order of operations (PEMDAS)",
+      "Solve word problems involving whole numbers"
+    ],
+    "prerequisites": [],
+    "bloom_level": "apply",
+    "estimated_hours": 8.0,
+    "keywords": ["whole numbers", "addition", "subtraction", "multiplication", "division", "PEMDAS", "order of operations"],
+    "description": "Understanding and applying operations with whole numbers including order of operations"
+  },
+  {
+    "id": "MATH-6-002",
+    "grade": 6,
+    "subject": "Mathematics",
+    "topic": "Fractions and Decimals",
+    "learning_objectives": [
+      "Convert between fractions and decimals",
+      "Perform operations with fractions",
+      "Compare and order fractions and decimals"
+    ],
+    "prerequisites": ["MATH-6-001"],
+    "bloom_level": "apply",
+    "estimated_hours": 10.0,
+    "keywords": ["fractions", "decimals", "numerator", "denominator", "conversion", "equivalent fractions"],
+    "description": "Working with fractions and decimals including conversions and operations"
+  },
+  {
+    "id": "MATH-6-003",
+    "grade": 6,
+    "subject": "Mathematics",
+    "topic": "Ratios and Proportions",
+    "learning_objectives": [
+      "Understand ratio concepts",
+      "Solve proportion problems",
+      "Apply ratios to real-world situations"
+    ],
+    "prerequisites": ["MATH-6-002"],
+    "bloom_level": "apply",
+    "estimated_hours": 6.0,
+    "keywords": ["ratio", "proportion", "rate", "scale", "equivalent ratios"],
+    "description": "Understanding and applying ratios and proportions in various contexts"
+  },
+  {
+    "id": "MATH-7-001",
+    "grade": 7,
+    "subject": "Mathematics",
+    "topic": "Integers and Rational Numbers",
+    "learning_objectives": [
+      "Perform operations with integers",
+      "Understand absolute value",
+      "Work with rational numbers on number line"
+    ],
+    "prerequisites": ["MATH-6-002"],
+    "bloom_level": "apply",
+    "estimated_hours": 8.0,
+    "keywords": ["integers", "negative numbers", "absolute value", "rational numbers", "number line"],
+    "description": "Operations with integers and understanding rational numbers"
+  },
+  {
+    "id": "MATH-7-002",
+    "grade": 7,
+    "subject": "Mathematics",
+    "topic": "Algebraic Expressions",
+    "learning_objectives": [
+      "Simplify algebraic expressions",
+      "Evaluate expressions with variables",
+      "Solve simple linear equations"
+    ],
+    "prerequisites": ["MATH-7-001"],
+    "bloom_level": "apply",
+    "estimated_hours": 12.0,
+    "keywords": ["algebra", "variables", "expressions", "equations", "simplify", "solve"],
+    "description": "Introduction to algebraic thinking and solving linear equations"
+  },
+  {
+    "id": "MATH-8-001",
+    "grade": 8,
+    "subject": "Mathematics",
+    "topic": "Linear Equations and Inequalities",
+    "learning_objectives": [
+      "Solve multi-step linear equations",
+      "Graph linear equations",
+      "Solve and graph linear inequalities"
+    ],
+    "prerequisites": ["MATH-7-002"],
+    "bloom_level": "analyze",
+    "estimated_hours": 10.0,
+    "keywords": ["linear equations", "inequalities", "graphing", "slope", "y-intercept"],
+    "description": "Advanced work with linear equations and introduction to inequalities"
+  },
+  {
+    "id": "SCI-6-001",
+    "grade": 6,
+    "subject": "Science",
+    "topic": "Living Organisms and Classification",
+    "learning_objectives": [
+      "Classify living organisms into groups",
+      "Understand characteristics of life",
+      "Identify local flora and fauna"
+    ],
+    "prerequisites": [],
+    "bloom_level": "understand",
+    "estimated_hours": 8.0,
+    "keywords": ["classification", "organisms", "plants", "animals", "characteristics", "biodiversity"],
+    "description": "Understanding classification of living organisms with focus on Nepal's biodiversity"
+  },
+  {
+    "id": "SCI-6-002",
+    "grade": 6,
+    "subject": "Science",
+    "topic": "Matter and Its Properties",
+    "learning_objectives": [
+      "Identify states of matter",
+      "Understand physical and chemical changes",
+      "Observe properties of common materials"
+    ],
+    "prerequisites": [],
+    "bloom_level": "understand",
+    "estimated_hours": 6.0,
+    "keywords": ["matter", "solid", "liquid", "gas", "properties", "physical change", "chemical change"],
+    "description": "Exploring matter, its states, and properties through observation"
+  },
+  {
+    "id": "SCI-7-001",
+    "grade": 7,
+    "subject": "Science",
+    "topic": "Force and Motion",
+    "learning_objectives": [
+      "Understand Newton's laws of motion",
+      "Calculate speed and velocity",
+      "Analyze forces in everyday situations"
+    ],
+    "prerequisites": ["SCI-6-002"],
+    "bloom_level": "analyze",
+    "estimated_hours": 10.0,
+    "keywords": ["force", "motion", "Newton's laws", "speed", "velocity", "acceleration", "friction"],
+    "description": "Understanding forces and motion with practical applications"
+  },
+  {
+    "id": "SCI-8-001",
+    "grade": 8,
+    "subject": "Science",
+    "topic": "Energy and Its Forms",
+    "learning_objectives": [
+      "Identify different forms of energy",
+      "Understand energy transformation",
+      "Apply conservation of energy principle"
+    ],
+    "prerequisites": ["SCI-7-001"],
+    "bloom_level": "apply",
+    "estimated_hours": 8.0,
+    "keywords": ["energy", "kinetic", "potential", "transformation", "conservation", "renewable", "non-renewable"],
+    "description": "Exploring energy forms, transformations, and conservation with Nepal context"
+  },
+  {
+    "id": "NEP-6-001",
+    "grade": 6,
+    "subject": "Nepali",
+    "topic": "व्याकरण र वाक्य संरचना (Grammar and Sentence Structure)",
+    "learning_objectives": [
+      "Identify parts of speech in Nepali",
+      "Construct grammatically correct sentences",
+      "Use proper punctuation"
+    ],
+    "prerequisites": [],
+    "bloom_level": "apply",
+    "estimated_hours": 10.0,
+    "keywords": ["व्याकरण", "grammar", "वाक्य", "sentence", "संज्ञा", "noun", "क्रिया", "verb", "विशेषण", "adjective"],
+    "description": "Understanding Nepali grammar and sentence construction"
+  },
+  {
+    "id": "NEP-7-001",
+    "grade": 7,
+    "subject": "Nepali",
+    "topic": "साहित्यिक विधाहरू (Literary Genres)",
+    "learning_objectives": [
+      "Identify different literary genres",
+      "Analyze poems and stories",
+      "Write creative compositions"
+    ],
+    "prerequisites": ["NEP-6-001"],
+    "bloom_level": "analyze",
+    "estimated_hours": 12.0,
+    "keywords": ["साहित्य", "literature", "कविता", "poetry", "कथा", "story", "निबन्ध", "essay"],
+    "description": "Exploring Nepali literature and developing analytical skills"
+  },
+  {
+    "id": "NEP-8-001",
+    "grade": 8,
+    "subject": "Nepali",
+    "topic": "उन्नत लेखन र अभिव्यक्ति (Advanced Writing and Expression)",
+    "learning_objectives": [
+      "Write formal and informal letters",
+      "Compose essays on various topics",
+      "Express opinions clearly and persuasively"
+    ],
+    "prerequisites": ["NEP-7-001"],
+    "bloom_level": "create",
+    "estimated_hours": 10.0,
+    "keywords": ["लेखन", "writing", "पत्र", "letter", "निबन्ध", "essay", "अभिव्यक्ति", "expression"],
+    "description": "Advanced writing skills and effective communication in Nepali"
+  },
+  {
+    "id": "ENG-6-001",
+    "grade": 6,
+    "subject": "English",
+    "topic": "Reading Comprehension",
+    "learning_objectives": [
+      "Read and understand grade-level texts",
+      "Identify main ideas and supporting details",
+      "Make inferences from text"
+    ],
+    "prerequisites": [],
+    "bloom_level": "understand",
+    "estimated_hours": 10.0,
+    "keywords": ["reading", "comprehension", "main idea", "details", "inference", "context"],
+    "description": "Developing reading comprehension skills with age-appropriate texts"
+  },
+  {
+    "id": "ENG-6-002",
+    "grade": 6,
+    "subject": "English",
+    "topic": "Grammar and Sentence Structure",
+    "learning_objectives": [
+      "Identify parts of speech",
+      "Construct complete sentences",
+      "Use correct verb tenses"
+    ],
+    "prerequisites": [],
+    "bloom_level": "apply",
+    "estimated_hours": 8.0,
+    "keywords": ["grammar", "parts of speech", "sentence", "verb tenses", "subject", "predicate"],
+    "description": "Understanding English grammar fundamentals"
+  },
+  {
+    "id": "ENG-7-001",
+    "grade": 7,
+    "subject": "English",
+    "topic": "Writing Skills",
+    "learning_objectives": [
+      "Write paragraphs with topic sentences",
+      "Organize ideas logically",
+      "Use descriptive language"
+    ],
+    "prerequisites": ["ENG-6-002"],
+    "bloom_level": "apply",
+    "estimated_hours": 10.0,
+    "keywords": ["writing", "paragraph", "topic sentence", "organization", "descriptive", "composition"],
+    "description": "Developing structured writing skills"
+  },
+  {
+    "id": "ENG-8-001",
+    "grade": 8,
+    "subject": "English",
+    "topic": "Literary Analysis",
+    "learning_objectives": [
+      "Analyze literary devices",
+      "Interpret themes and symbolism",
+      "Write analytical essays"
+    ],
+    "prerequisites": ["ENG-7-001"],
+    "bloom_level": "analyze",
+    "estimated_hours": 12.0,
+    "keywords": ["literary analysis", "theme", "symbolism", "metaphor", "character", "plot"],
+    "description": "Analyzing literature and writing critical essays"
+  },
+  {
+    "id": "SS-6-001",
+    "grade": 6,
+    "subject": "Social Studies",
+    "topic": "Geography of Nepal",
+    "learning_objectives": [
+      "Identify major geographical regions of Nepal",
+      "Understand climate zones",
+      "Locate major cities and landmarks"
+    ],
+    "prerequisites": [],
+    "bloom_level": "remember",
+    "estimated_hours": 8.0,
+    "keywords": ["geography", "Nepal", "mountains", "terai", "hills", "climate", "regions", "Himalayas"],
+    "description": "Understanding Nepal's geographical diversity and features"
+  },
+  {
+    "id": "SS-7-001",
+    "grade": 7,
+    "subject": "Social Studies",
+    "topic": "History of Nepal",
+    "learning_objectives": [
+      "Understand major historical periods",
+      "Identify key historical figures",
+      "Analyze historical events and their impact"
+    ],
+    "prerequisites": ["SS-6-001"],
+    "bloom_level": "analyze",
+    "estimated_hours": 10.0,
+    "keywords": ["history", "Nepal", "dynasties", "unification", "Prithvi Narayan Shah", "historical events"],
+    "description": "Exploring Nepal's rich historical heritage"
+  },
+  {
+    "id": "SS-8-001",
+    "grade": 8,
+    "subject": "Social Studies",
+    "topic": "Civics and Government",
+    "learning_objectives": [
+      "Understand Nepal's government structure",
+      "Identify rights and responsibilities of citizens",
+      "Analyze democratic principles"
+    ],
+    "prerequisites": ["SS-7-001"],
+    "bloom_level": "analyze",
+    "estimated_hours": 8.0,
+    "keywords": ["civics", "government", "democracy", "constitution", "rights", "responsibilities", "citizenship"],
+    "description": "Understanding civic responsibilities and Nepal's democratic system"
+  }
+]

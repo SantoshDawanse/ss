@@ -1,0 +1,113 @@
+name: Local Brain CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'local-brain/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'local-brain/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: local-brain/package-lock.json
+
+      - name: Install dependencies
+        working-directory: local-brain
+        run: npm ci
+
+      - name: Lint
+        working-directory: local-brain
+        run: npm run lint
+
+      - name: Type check
+        working-directory: local-brain
+        run: npm run type-check
+
+      - name: Run unit tests
+        working-directory: local-brain
+        run: npm test -- --coverage --testPathIgnorePatterns=pbt.test
+
+      - name: Run property-based tests
+        working-directory: local-brain
+        run: npm run test:pbt
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: local-brain/coverage/coverage-final.json
+          flags: local-brain
+
+  build-android:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install dependencies
+        working-directory: local-brain
+        run: npm ci
+
+      - name: Build Android APK
+        working-directory: local-brain/android
+        run: ./gradlew assembleRelease
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: local-brain/android/app/build/outputs/apk/release/app-release.apk
+
+  build-ios:
+    needs: test
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        working-directory: local-brain
+        run: npm ci
+
+      - name: Install CocoaPods
+        working-directory: local-brain/ios
+        run: pod install
+
+      - name: Build iOS
+        working-directory: local-brain/ios
+        run: |
+          xcodebuild -workspace SikshyaSathi.xcworkspace \
+            -scheme SikshyaSathi \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
