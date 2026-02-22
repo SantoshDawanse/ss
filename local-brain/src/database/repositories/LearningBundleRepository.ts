@@ -80,14 +80,46 @@ export class LearningBundleRepository extends BaseRepository<LearningBundleRow> 
         [studentId],
       );
 
-      if (result.rows.length === 0) {
+      if (result.length === 0) {
         return null;
       }
 
-      return this.rowToObject(result.rows.item(0));
+      return this.rowToObject(result[0]);
     } catch (error) {
       console.error('Error finding active bundle:', error);
       throw new Error(`Failed to find active bundle: ${error}`);
+    }
+  }
+
+  /**
+   * Alias for findActiveByStudent for compatibility.
+   */
+  public async getActiveBundle(studentId: string): Promise<LearningBundleRow | null> {
+    return this.findActiveByStudent(studentId);
+  }
+
+  /**
+   * Insert a new learning bundle.
+   */
+  public async insert(bundle: any): Promise<void> {
+    try {
+      await this.execute(
+        `INSERT INTO ${this.tableName} 
+        (bundle_id, student_id, valid_from, valid_until, total_size, checksum, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          bundle.bundleId,
+          bundle.studentId,
+          bundle.validFrom.getTime(),
+          bundle.validUntil.getTime(),
+          bundle.totalSize,
+          bundle.checksum,
+          'active',
+        ],
+      );
+    } catch (error) {
+      console.error('Error inserting learning bundle:', error);
+      throw new Error(`Failed to insert learning bundle: ${error}`);
     }
   }
 
@@ -117,9 +149,9 @@ export class LearningBundleRepository extends BaseRepository<LearningBundleRow> 
     try {
       await this.execute(
         `UPDATE ${this.tableName} 
-        SET status = 'archived' 
-        WHERE student_id = ? AND status = 'active'`,
-        [studentId],
+        SET status = ? 
+        WHERE student_id = ? AND status = ?`,
+        ['archived', studentId, 'active'],
       );
     } catch (error) {
       console.error('Error archiving old bundles:', error);

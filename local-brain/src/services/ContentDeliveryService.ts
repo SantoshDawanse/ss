@@ -5,9 +5,6 @@
  */
 
 import { DatabaseManager } from '../database/DatabaseManager';
-import { LessonRepository } from '../database/repositories/LessonRepository';
-import { QuizRepository } from '../database/repositories/QuizRepository';
-import { HintRepository } from '../database/repositories/HintRepository';
 import { Lesson, Quiz, Hint, Question } from '../models';
 
 interface ContentCache {
@@ -25,17 +22,11 @@ export interface QuizFeedback {
 
 export class ContentDeliveryService {
   private dbManager: DatabaseManager;
-  private lessonRepo: LessonRepository;
-  private quizRepo: QuizRepository;
-  private hintRepo: HintRepository;
   private cache: ContentCache;
   private preloadQueue: string[] = [];
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
-    this.lessonRepo = new LessonRepository(dbManager);
-    this.quizRepo = new QuizRepository(dbManager);
-    this.hintRepo = new HintRepository(dbManager);
     this.cache = {
       lessons: new Map(),
       quizzes: new Map(),
@@ -56,7 +47,7 @@ export class ContentDeliveryService {
       }
 
       // Get all lessons for subject from active bundle
-      const lessons = await this.lessonRepo.findByBundleAndSubject(
+      const lessons = await this.dbManager.lessonRepository.findByBundleAndSubject(
         activeBundleId,
         subject
       );
@@ -66,29 +57,31 @@ export class ContentDeliveryService {
       }
 
       // Get the first lesson (study track ordering handled by bundle generation)
-      const nextLesson = lessons[0];
+      const nextLessonRow = lessons[0];
 
       // Check cache first
-      if (this.cache.lessons.has(nextLesson.lessonId)) {
-        const cachedLesson = this.cache.lessons.get(nextLesson.lessonId)!;
+      if (this.cache.lessons.has(nextLessonRow.lesson_id)) {
+        const cachedLesson = this.cache.lessons.get(nextLessonRow.lesson_id)!;
         
         // Preload next 3 lessons in background
-        this.preloadNextLessons(lessons.slice(1, 4));
+        this.preloadNextLessons(lessons.slice(1, 4).map(l => ({ lessonId: l.lesson_id })));
         
         return cachedLesson;
       }
 
-      // Load lesson from database
-      const lesson = await this.lessonRepo.findById(nextLesson.lessonId);
-      if (!lesson) {
+      // Load lesson from database and parse
+      const lessonRow = await this.dbManager.lessonRepository.findById(nextLessonRow.lesson_id);
+      if (!lessonRow) {
         return null;
       }
+
+      const lesson = this.dbManager.lessonRepository.parseLesson(lessonRow);
 
       // Cache the lesson
       this.cache.lessons.set(lesson.lessonId, lesson);
 
       // Preload next 3 lessons in background
-      this.preloadNextLessons(lessons.slice(1, 4));
+      this.preloadNextLessons(lessons.slice(1, 4).map(l => ({ lessonId: l.lesson_id })));
 
       return lesson;
     } catch (error) {
@@ -110,7 +103,7 @@ export class ContentDeliveryService {
       }
 
       // Get all quizzes for subject from active bundle
-      const quizzes = await this.quizRepo.findByBundleAndSubject(
+      const quizzes = await this.dbManager.quizRepository.findByBundleAndSubject(
         activeBundleId,
         subject
       );
@@ -127,11 +120,13 @@ export class ContentDeliveryService {
         return this.cache.quizzes.get(nextQuiz.quizId)!;
       }
 
-      // Load quiz from database
-      const quiz = await this.quizRepo.findById(nextQuiz.quizId);
-      if (!quiz) {
+      // Load quiz from database and parse
+      const quizRow = await this.dbManager.quizRepository.findById(nextQuiz.quizId);
+      if (!quizRow) {
         return null;
       }
+
+      const quiz = this.dbManager.quizRepository.parseQuiz(quizRow);
 
       // Cache the quiz
       this.cache.quizzes.set(quiz.quizId, quiz);
@@ -169,11 +164,18 @@ export class ContentDeliveryService {
       }
 
       // Load hints from database
-      const hints = await this.hintRepo.findByQuizAndQuestion(quizId, questionId);
+      const hintRows = await this.dbManager.hintRepository.findByQuizAndQuestion(quizId, questionId);
       
-      if (hints.length === 0) {
+      if (hintRows.length === 0) {
         return null;
       }
+
+      // Convert rows to Hint objects
+      const hints: Hint[] = hintRows.map(row => ({
+        hintId: row.hint_id,
+        level: row.level,
+        text: row.hint_text,
+      }));
 
       // Cache all hints for this question
       this.cache.hints.set(cacheKey, hints);
@@ -198,12 +200,14 @@ export class ContentDeliveryService {
       }
 
       // Load from database
-      const lesson = await this.lessonRepo.findById(lessonId);
-      if (lesson) {
+      const lessonRow = await this.dbManager.lessonRepository.findById(lessonId);
+      if (lessonRow) {
+        const lesson = this.dbManager.lessonRepository.parseLesson(lessonRow);
         this.cache.lessons.set(lessonId, lesson);
+        return lesson;
       }
 
-      return lesson;
+      return null;
     } catch (error) {
       console.error('Error getting lesson by ID:', error);
       throw error;
@@ -221,12 +225,14 @@ export class ContentDeliveryService {
       }
 
       // Load from database
-      const quiz = await this.quizRepo.findById(quizId);
-      if (quiz) {
+      const quizRow = await this.dbManager.quizRepository.findById(quizId);
+      if (quizRow) {
+        const quiz = this.dbManager.quizRepository.parseQuiz(quizRow);
         this.cache.quizzes.set(quizId, quiz);
+        return quiz;
       }
 
-      return quiz;
+      return null;
     } catch (error) {
       console.error('Error getting quiz by ID:', error);
       throw error;
@@ -301,19 +307,23 @@ export class ContentDeliveryService {
   // Private helper methods
 
   private async getActiveBundleId(studentId: string): Promise<string | null> {
-    const db = await this.dbManager.getDatabase();
-    const result = await db.executeSql(
-      `SELECT bundle_id FROM learning_bundles 
-       WHERE student_id = ? AND status = 'active' 
-       ORDER BY valid_from DESC LIMIT 1`,
-      [studentId]
-    );
+    try {
+      const result = await this.dbManager.executeSql(
+        `SELECT bundle_id FROM learning_bundles 
+         WHERE student_id = ? AND status = 'active' 
+         ORDER BY valid_from DESC LIMIT 1`,
+        [studentId]
+      );
 
-    if (result[0].rows.length === 0) {
+      if (result.length === 0) {
+        return null;
+      }
+
+      return result[0].bundle_id;
+    } catch (error) {
+      console.error('Error getting active bundle ID:', error);
       return null;
     }
-
-    return result[0].rows.item(0).bundle_id;
   }
 
   private async preloadNextLessons(lessons: Array<{ lessonId: string }>): Promise<void> {
@@ -341,8 +351,9 @@ export class ContentDeliveryService {
     }
 
     try {
-      const lesson = await this.lessonRepo.findById(lessonId);
-      if (lesson) {
+      const lessonRow = await this.dbManager.lessonRepository.findById(lessonId);
+      if (lessonRow) {
+        const lesson = this.dbManager.lessonRepository.parseLesson(lessonRow);
         this.cache.lessons.set(lessonId, lesson);
       }
     } catch (error) {

@@ -1,13 +1,11 @@
 /**
  * DatabaseManager handles SQLite database initialization, encryption,
  * and connection management for the Local Brain.
+ * 
+ * Updated for Expo SQLite
  */
 
-import SQLite, {
-  SQLiteDatabase,
-  enablePromise,
-  openDatabase,
-} from 'react-native-sqlite-storage';
+import * as SQLite from 'expo-sqlite';
 import {
   CREATE_TABLES,
   CREATE_INDEXES,
@@ -15,9 +13,18 @@ import {
   DatabaseConfig,
   DEFAULT_DB_CONFIG,
 } from './schema';
+import {
+  LearningBundleRepository,
+  LessonRepository,
+  QuizRepository,
+  HintRepository,
+  PerformanceLogRepository,
+  SyncSessionRepository,
+  StudentStateRepository,
+  StudyTrackRepository,
+} from './repositories';
 
-// Enable promise-based API
-enablePromise(true);
+type SQLiteDatabase = SQLite.SQLiteDatabase;
 
 /**
  * DatabaseManager singleton class for managing SQLite database.
@@ -27,6 +34,16 @@ export class DatabaseManager {
   private db: SQLiteDatabase | null = null;
   private config: DatabaseConfig;
   private isInitialized = false;
+
+  // Repository instances
+  public learningBundleRepository!: LearningBundleRepository;
+  public lessonRepository!: LessonRepository;
+  public quizRepository!: QuizRepository;
+  public hintRepository!: HintRepository;
+  public performanceLogRepository!: PerformanceLogRepository;
+  public syncSessionRepository!: SyncSessionRepository;
+  public studentStateRepository!: StudentStateRepository;
+  public studyTrackRepository!: StudyTrackRepository;
 
   private constructor(config: DatabaseConfig = DEFAULT_DB_CONFIG) {
     this.config = config;
@@ -45,6 +62,14 @@ export class DatabaseManager {
   }
 
   /**
+   * Reset singleton instance (for testing purposes).
+   * WARNING: Only use this in tests!
+   */
+  public static resetInstance(): void {
+    DatabaseManager.instance = null as any;
+  }
+
+  /**
    * Initialize database connection and create schema.
    * Implements SQLCipher encryption if enabled in config.
    */
@@ -54,11 +79,8 @@ export class DatabaseManager {
     }
 
     try {
-      // Open database connection
-      this.db = await openDatabase({
-        name: this.config.name,
-        location: this.config.location,
-      });
+      // Open database connection with Expo SQLite
+      this.db = await SQLite.openDatabaseAsync(this.config.name);
 
       // Enable SQLCipher encryption if configured
       if (this.config.encryption && this.config.encryptionKey) {
@@ -66,13 +88,16 @@ export class DatabaseManager {
       }
 
       // Enable foreign key constraints
-      await this.db.executeSql('PRAGMA foreign_keys = ON;');
+      await this.db.execAsync('PRAGMA foreign_keys = ON;');
 
       // Create tables
       await this.createTables();
 
       // Create indexes
       await this.createIndexes();
+
+      // Initialize repositories
+      this.initializeRepositories();
 
       this.isInitialized = true;
       console.log('Database initialized successfully');
@@ -93,10 +118,10 @@ export class DatabaseManager {
 
     try {
       // Set encryption key using SQLCipher PRAGMA
-      await this.db.executeSql(`PRAGMA key = '${key}';`);
+      await this.db.execAsync(`PRAGMA key = '${key}';`);
       
       // Verify encryption is working by running a test query
-      await this.db.executeSql('SELECT count(*) FROM sqlite_master;');
+      await this.db.getAllAsync('SELECT count(*) FROM sqlite_master;');
       
       console.log('Database encryption enabled');
     } catch (error) {
@@ -115,14 +140,14 @@ export class DatabaseManager {
 
     try {
       // Create tables in order (respecting foreign key dependencies)
-      await this.db.executeSql(CREATE_TABLES.LEARNING_BUNDLES);
-      await this.db.executeSql(CREATE_TABLES.LESSONS);
-      await this.db.executeSql(CREATE_TABLES.QUIZZES);
-      await this.db.executeSql(CREATE_TABLES.HINTS);
-      await this.db.executeSql(CREATE_TABLES.PERFORMANCE_LOGS);
-      await this.db.executeSql(CREATE_TABLES.SYNC_SESSIONS);
-      await this.db.executeSql(CREATE_TABLES.STUDENT_STATE);
-      await this.db.executeSql(CREATE_TABLES.STUDY_TRACKS);
+      await this.db.execAsync(CREATE_TABLES.LEARNING_BUNDLES);
+      await this.db.execAsync(CREATE_TABLES.LESSONS);
+      await this.db.execAsync(CREATE_TABLES.QUIZZES);
+      await this.db.execAsync(CREATE_TABLES.HINTS);
+      await this.db.execAsync(CREATE_TABLES.PERFORMANCE_LOGS);
+      await this.db.execAsync(CREATE_TABLES.SYNC_SESSIONS);
+      await this.db.execAsync(CREATE_TABLES.STUDENT_STATE);
+      await this.db.execAsync(CREATE_TABLES.STUDY_TRACKS);
 
       console.log('Database tables created successfully');
     } catch (error) {
@@ -142,7 +167,7 @@ export class DatabaseManager {
     try {
       // Create all indexes
       for (const indexSql of Object.values(CREATE_INDEXES)) {
-        await this.db.executeSql(indexSql);
+        await this.db.execAsync(indexSql);
       }
 
       console.log('Database indexes created successfully');
@@ -150,6 +175,32 @@ export class DatabaseManager {
       console.error('Failed to create indexes:', error);
       throw new Error(`Index creation failed: ${error}`);
     }
+  }
+
+  /**
+   * Initialize all repository instances.
+   */
+  private initializeRepositories(): void {
+    this.learningBundleRepository = new LearningBundleRepository();
+    this.lessonRepository = new LessonRepository();
+    this.quizRepository = new QuizRepository();
+    this.hintRepository = new HintRepository();
+    this.performanceLogRepository = new PerformanceLogRepository();
+    this.syncSessionRepository = new SyncSessionRepository();
+    this.studentStateRepository = new StudentStateRepository();
+    this.studyTrackRepository = new StudyTrackRepository();
+
+    // Set database manager for all repositories
+    this.learningBundleRepository.setDatabaseManager(this);
+    this.lessonRepository.setDatabaseManager(this);
+    this.quizRepository.setDatabaseManager(this);
+    this.hintRepository.setDatabaseManager(this);
+    this.performanceLogRepository.setDatabaseManager(this);
+    this.syncSessionRepository.setDatabaseManager(this);
+    this.studentStateRepository.setDatabaseManager(this);
+    this.studyTrackRepository.setDatabaseManager(this);
+
+    console.log('Repositories initialized');
   }
 
   /**
@@ -165,13 +216,26 @@ export class DatabaseManager {
 
   /**
    * Execute a SQL query with parameters.
+   * Returns all rows from the result.
    */
   public async executeSql(
     sql: string,
     params: any[] = [],
-  ): Promise<[SQLite.ResultSet]> {
+  ): Promise<any[]> {
     const db = this.getDatabase();
-    return db.executeSql(sql, params);
+    return db.getAllAsync(sql, params);
+  }
+
+  /**
+   * Execute a SQL statement (INSERT, UPDATE, DELETE).
+   * Returns the result with changes info.
+   */
+  public async runSql(
+    sql: string,
+    params: any[] = [],
+  ): Promise<SQLite.SQLiteRunResult> {
+    const db = this.getDatabase();
+    return db.runAsync(sql, params);
   }
 
   /**
@@ -179,10 +243,10 @@ export class DatabaseManager {
    * Rolls back all changes if any statement fails.
    */
   public async transaction(
-    callback: (tx: SQLite.Transaction) => Promise<void>,
+    callback: () => Promise<void>,
   ): Promise<void> {
     const db = this.getDatabase();
-    return db.transaction(callback);
+    await db.withTransactionAsync(callback);
   }
 
   /**
@@ -190,7 +254,7 @@ export class DatabaseManager {
    */
   public async close(): Promise<void> {
     if (this.db) {
-      await this.db.close();
+      await this.db.closeAsync();
       this.db = null;
       this.isInitialized = false;
       console.log('Database connection closed');
@@ -209,7 +273,7 @@ export class DatabaseManager {
     try {
       // Drop tables in reverse order (respecting foreign key dependencies)
       for (const dropSql of Object.values(DROP_TABLES)) {
-        await this.db.executeSql(dropSql);
+        await this.db.execAsync(dropSql);
       }
 
       console.log('All tables dropped successfully');
@@ -255,10 +319,10 @@ export class DatabaseManager {
       ];
 
       for (const table of tables) {
-        const [result] = await db.executeSql(
+        const result = await db.getFirstAsync<{ count: number }>(
           `SELECT COUNT(*) as count FROM ${table}`,
         );
-        const count = result.rows.item(0).count;
+        const count = result?.count || 0;
         stats.tables[table] = count;
         stats.totalRecords += count;
       }

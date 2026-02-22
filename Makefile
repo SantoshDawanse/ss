@@ -1,23 +1,34 @@
-.PHONY: help setup test lint clean deploy-dev deploy-staging
+.PHONY: help setup test lint clean deploy-dev deploy-staging quick-start run-local run-android run-ios run-dashboard test-watch setup-dashboard
 
 help:
 	@echo "Sikshya-Sathi Development Commands"
+	@echo ""
+	@echo "Quick Start:"
+	@echo "  make quick-start        - Run automated setup script"
+	@echo "  make run-local          - Start Local Brain dev server"
+	@echo "  make run-android        - Run Local Brain on Android"
+	@echo "  make run-ios            - Run Local Brain on iOS"
+	@echo "  make run-dashboard      - Start Web Dashboard dev server"
 	@echo ""
 	@echo "Setup:"
 	@echo "  make setup              - Install all dependencies"
 	@echo "  make setup-cloud        - Install Cloud Brain dependencies"
 	@echo "  make setup-local        - Install Local Brain dependencies"
+	@echo "  make setup-dashboard    - Install Web Dashboard dependencies"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test               - Run all tests"
 	@echo "  make test-cloud         - Run Cloud Brain tests"
 	@echo "  make test-local         - Run Local Brain tests"
+	@echo "  make test-dashboard     - Run Web Dashboard tests"
 	@echo "  make test-pbt           - Run property-based tests only"
+	@echo "  make test-watch         - Run tests in watch mode"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make lint               - Run linters on all code"
 	@echo "  make lint-cloud         - Lint Cloud Brain code"
 	@echo "  make lint-local         - Lint Local Brain code"
+	@echo "  make lint-dashboard     - Lint Web Dashboard code"
 	@echo ""
 	@echo "Deployment:"
 	@echo "  make deploy-dev         - Deploy to development environment"
@@ -30,7 +41,10 @@ help:
 	@echo "  make clean              - Remove build artifacts"
 
 # Setup commands
-setup: setup-cloud setup-local
+quick-start:
+	@bash quick-start.sh
+
+setup: setup-cloud setup-local setup-dashboard
 
 setup-cloud:
 	cd cloud-brain && pip install -r requirements.txt -r requirements-dev.txt
@@ -38,8 +52,24 @@ setup-cloud:
 setup-local:
 	cd local-brain && npm install
 
+setup-dashboard:
+	cd cloud-brain/web-dashboard && npm install
+
+# Local development commands
+run-local:
+	cd local-brain && npm start
+
+run-android:
+	cd local-brain && npm run android
+
+run-ios:
+	cd local-brain && npm run ios
+
+run-dashboard:
+	cd cloud-brain/web-dashboard && npm run dev
+
 # Testing commands
-test: test-cloud test-local
+test: test-cloud test-local test-dashboard
 
 test-cloud:
 	cd cloud-brain && pytest
@@ -47,12 +77,18 @@ test-cloud:
 test-local:
 	cd local-brain && npm test
 
+test-dashboard:
+	cd cloud-brain/web-dashboard && npm test
+
 test-pbt:
 	cd cloud-brain && pytest -m property_test
 	cd local-brain && npm run test:pbt
 
+test-watch:
+	cd local-brain && npm run test:watch
+
 # Linting commands
-lint: lint-cloud lint-local
+lint: lint-cloud lint-local lint-dashboard
 
 lint-cloud:
 	cd cloud-brain && ruff check src tests
@@ -60,7 +96,9 @@ lint-cloud:
 
 lint-local:
 	cd local-brain && npm run lint
-	cd local-brain && npm run type-check
+
+lint-dashboard:
+	cd cloud-brain/web-dashboard && npm run lint
 
 # Deployment commands
 deploy-dev:

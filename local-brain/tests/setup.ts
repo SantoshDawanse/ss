@@ -12,9 +12,8 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
-// Mock SQLite with in-memory database simulation
-// Note: Mock factory must be self-contained (no external imports)
-jest.mock('react-native-sqlite-storage', () => {
+// Mock expo-sqlite with in-memory database simulation
+jest.mock('expo-sqlite', () => {
   let mockDatabaseInstance: any = null;
 
   const createMockDatabase = () => {
@@ -41,7 +40,7 @@ jest.mock('react-native-sqlite-storage', () => {
       tables,
       foreignKeysEnabled: false,
 
-      async executeSql(sql: string, params: any[] = []) {
+      execSync(sql: string, params: any[] = []) {
         const normalizedSql = sql.trim().toUpperCase();
 
         // Handle PRAGMA, CREATE, DROP statements
@@ -219,13 +218,57 @@ jest.mock('react-native-sqlite-storage', () => {
 
       async transaction(callback: any) {
         const tx = {
-          executeSql: this.executeSql.bind(this),
+          executeSql: this.execSync.bind(this),
         };
         try {
           await callback(tx);
         } catch (error) {
           throw error;
         }
+      },
+
+      runSync(sql: string, params: any[] = []) {
+        return this.execSync(sql, params);
+      },
+
+      execAsync(sql: string, params: any[] = []) {
+        return Promise.resolve(this.execSync(sql, params));
+      },
+
+      runAsync(sql: string, params: any[] = []) {
+        return Promise.resolve(this.execSync(sql, params));
+      },
+
+      getAllAsync(sql: string, params: any[] = []) {
+        const result = this.execSync(sql, params);
+        const rows = result[0].rows;
+        const items = [];
+        for (let i = 0; i < rows.length; i++) {
+          items.push(rows.item(i));
+        }
+        return Promise.resolve(items);
+      },
+
+      getFirstAsync(sql: string, params: any[] = []) {
+        const result = this.execSync(sql, params);
+        const rows = result[0].rows;
+        return Promise.resolve(rows.length > 0 ? rows.item(0) : null);
+      },
+
+      getAllSync(sql: string, params: any[] = []) {
+        const result = this.execSync(sql, params);
+        const rows = result[0].rows;
+        const items = [];
+        for (let i = 0; i < rows.length; i++) {
+          items.push(rows.item(i));
+        }
+        return items;
+      },
+
+      getFirstSync(sql: string, params: any[] = []) {
+        const result = this.execSync(sql, params);
+        const rows = result[0].rows;
+        return rows.length > 0 ? rows.item(0) : null;
       },
 
       async close() {
@@ -235,20 +278,42 @@ jest.mock('react-native-sqlite-storage', () => {
   };
 
   return {
-    enablePromise: jest.fn(),
-    openDatabase: jest.fn(() => {
+    openDatabaseSync: jest.fn((name: string) => {
       if (!mockDatabaseInstance) {
         mockDatabaseInstance = createMockDatabase();
       }
-      return Promise.resolve(mockDatabaseInstance);
+      return mockDatabaseInstance;
+    }),
+    openDatabaseAsync: jest.fn(async (name: string) => {
+      if (!mockDatabaseInstance) {
+        mockDatabaseInstance = createMockDatabase();
+      }
+      return mockDatabaseInstance;
+    }),
+    NativeDatabase: jest.fn(function(name: string) {
+      if (!mockDatabaseInstance) {
+        mockDatabaseInstance = createMockDatabase();
+      }
+      return mockDatabaseInstance;
     }),
     default: {
-      enablePromise: jest.fn(),
-      openDatabase: jest.fn(() => {
+      openDatabaseSync: jest.fn((name: string) => {
         if (!mockDatabaseInstance) {
           mockDatabaseInstance = createMockDatabase();
         }
-        return Promise.resolve(mockDatabaseInstance);
+        return mockDatabaseInstance;
+      }),
+      openDatabaseAsync: jest.fn(async (name: string) => {
+        if (!mockDatabaseInstance) {
+          mockDatabaseInstance = createMockDatabase();
+        }
+        return mockDatabaseInstance;
+      }),
+      NativeDatabase: jest.fn(function(name: string) {
+        if (!mockDatabaseInstance) {
+          mockDatabaseInstance = createMockDatabase();
+        }
+        return mockDatabaseInstance;
       }),
     },
   };

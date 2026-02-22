@@ -55,13 +55,41 @@ export class LessonRepository extends BaseRepository<LessonRow> {
   }
 
   /**
+   * Insert a new lesson (alias for create, accepts Lesson model).
+   */
+  public async insert(lesson: Lesson, bundleId: string): Promise<void> {
+    try {
+      await this.execute(
+        `INSERT INTO ${this.tableName} 
+        (lesson_id, bundle_id, subject, topic, title, difficulty, 
+         content_json, estimated_minutes, curriculum_standards)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          lesson.lessonId,
+          bundleId,
+          lesson.subject,
+          lesson.topic,
+          lesson.title,
+          lesson.difficulty,
+          JSON.stringify(lesson.sections),
+          lesson.estimatedMinutes,
+          JSON.stringify(lesson.curriculumStandards),
+        ],
+      );
+    } catch (error) {
+      console.error('Error inserting lesson:', error);
+      throw new Error(`Failed to insert lesson: ${error}`);
+    }
+  }
+
+  /**
    * Bulk insert lessons in a transaction.
    */
   public async bulkCreate(lessons: LessonRow[]): Promise<void> {
     try {
-      await this.executeTransaction(async tx => {
+      await this.executeTransaction(async () => {
         for (const lesson of lessons) {
-          await tx.executeSql(
+          await this.execute(
             `INSERT INTO ${this.tableName} 
             (lesson_id, bundle_id, subject, topic, title, difficulty, 
              content_json, estimated_minutes, curriculum_standards)

@@ -1,66 +1,111 @@
-# Sikshya-Sathi Local Brain
+# Sikshya Sathi - Local Brain
 
-Offline-first mobile application for content delivery and performance tracking.
+Offline-first mobile learning application built with Expo and React Native.
 
-## Architecture
+## Features
 
-- **Framework**: React Native with TypeScript
-- **Database**: SQLite with SQLCipher encryption
-- **State Management**: React Context + Hooks
-- **Testing**: Jest + fast-check (property-based testing)
+- 📚 Offline lessons and quizzes
+- 💾 Automatic progress saving every 30 seconds
+- 🎯 Adaptive learning paths
+- 💡 Progressive hints for quizzes
+- 📊 Performance tracking
+- 🔄 Crash recovery
+
+## Tech Stack
+
+- **Framework**: Expo (React Native)
+- **Database**: Expo SQLite
+- **State Management**: AsyncStorage
+- **Testing**: Jest + Fast-check (Property-based testing)
+- **Language**: TypeScript
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js >= 18
+- Yarn
+- Expo CLI
+- Android Studio (for Android) or Xcode (for iOS)
+
+### Installation
+
+```bash
+# Install dependencies
+yarn install
+
+# Start the development server
+yarn start
+
+# Run on Android
+yarn android
+
+# Run on iOS
+yarn ios
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+yarn test
+
+# Run property-based tests
+yarn test:pbt
+
+# Run tests in watch mode
+yarn test:watch
+```
 
 ## Project Structure
 
 ```
-local-brain/
-├── src/
-│   ├── components/        # React Native components
-│   ├── screens/           # Screen components
-│   ├── services/          # Business logic services
-│   ├── database/          # SQLite database layer
+local-brain-v2/
+├── app/                    # Expo Router pages
+│   └── (tabs)/            # Tab navigation
+├── src/                   # Core business logic
+│   ├── services/          # Business services
+│   │   ├── ContentDeliveryService.ts
+│   │   ├── PerformanceTrackingService.ts
+│   │   └── StatePersistenceService.ts
+│   ├── database/          # Database layer
+│   │   ├── DatabaseManager.ts
+│   │   ├── repositories/  # Data access layer
+│   │   └── schema.ts
 │   ├── models/            # TypeScript interfaces
-│   ├── utils/             # Utility functions
-│   └── navigation/        # Navigation configuration
+│   └── utils/             # Utility functions
 ├── tests/                 # Test files
-├── android/               # Android native code
-├── ios/                   # iOS native code
-└── package.json
+├── components/            # React components
+└── assets/               # Images, fonts, etc.
 ```
 
-## Setup
+## Core Services
+
+### ContentDeliveryService
+Handles offline content delivery with preloading and caching for lessons, quizzes, and hints.
+
+### PerformanceTrackingService
+Tracks student events and manages performance logs with immediate SQLite writes for crash recovery.
+
+### StatePersistenceService
+Manages automatic state persistence with 30-second auto-save and crash recovery.
+
+## Development
+
+The app uses Expo's file-based routing. Main screens are in `app/(tabs)/`.
+
+Core business logic is in `src/` and is framework-agnostic, making it easy to test and maintain.
+
+## Building for Production
 
 ```bash
-# Install dependencies
-npm install
+# Build for Android
+eas build --platform android
 
-# iOS setup
-cd ios && pod install && cd ..
-
-# Run on Android
-npm run android
-
-# Run on iOS
-npm run ios
-
-# Run tests
-npm test
-
-# Run property-based tests
-npm run test:pbt
+# Build for iOS
+eas build --platform ios
 ```
 
-## Environment Variables
+## License
 
-Create a `.env` file:
-
-```
-API_BASE_URL=https://api.sikshya-sathi.np/v1
-ENVIRONMENT=development
-```
-
-## Requirements
-
-- Node.js 18+
-- React Native CLI
-- Android Studio (for Android)
-- Xcode (for iOS)
+Private - Sikshya Sathi Project

@@ -27,6 +27,11 @@ from src.models.content import (
 from src.models.personalization import KnowledgeModel
 from src.services.curriculum_validator import CurriculumValidatorService
 from src.services.safety_filter import SafetyFilter
+from src.utils.monitoring import (
+    get_monitoring_service,
+    LatencyTimer,
+    MetricName,
+)
 
 logger = Logger()
 
@@ -139,6 +144,8 @@ def generate_lesson_handler(params: dict[str, Any]) -> dict[str, Any]:
         Lesson data as dict
     """
     logger.info("Generating lesson", extra={"params": params})
+    
+    monitoring = get_monitoring_service()
 
     # Extract parameters
     topic = params["topic"]
@@ -174,32 +181,38 @@ def generate_lesson_handler(params: dict[str, Any]) -> dict[str, Any]:
     # Generate lesson ID
     lesson_id = f"lesson-{uuid.uuid4().hex[:12]}"
 
-    # Create lesson structure
-    # Note: In production, this would call Bedrock Agent to generate content
-    # For now, we create a template structure
-    lesson = Lesson(
-        lesson_id=lesson_id,
-        subject=subject,
-        topic=topic,
-        title=f"{topic} - {difficulty.capitalize()} Level",
-        difficulty=DifficultyLevel(difficulty),
-        estimated_minutes=20,
-        curriculum_standards=curriculum_standards,
-        sections=[
-            LessonSection(
-                type=LessonSectionType.EXPLANATION,
-                content=f"# Introduction to {topic}\n\nThis lesson covers {topic} for grade {grade}.",
-            ),
-            LessonSection(
-                type=LessonSectionType.EXAMPLE,
-                content=f"## Example\n\nHere's an example of {topic}...",
-            ),
-            LessonSection(
-                type=LessonSectionType.PRACTICE,
-                content=f"## Practice\n\nTry these practice problems...",
-            ),
-        ],
-    )
+    # Track content generation latency
+    with LatencyTimer(
+        monitoring,
+        MetricName.CONTENT_GENERATION_LATENCY,
+        dimensions={"ContentType": "lesson", "Subject": subject},
+    ):
+        # Create lesson structure
+        # Note: In production, this would call Bedrock Agent to generate content
+        # For now, we create a template structure
+        lesson = Lesson(
+            lesson_id=lesson_id,
+            subject=subject,
+            topic=topic,
+            title=f"{topic} - {difficulty.capitalize()} Level",
+            difficulty=DifficultyLevel(difficulty),
+            estimated_minutes=20,
+            curriculum_standards=curriculum_standards,
+            sections=[
+                LessonSection(
+                    type=LessonSectionType.EXPLANATION,
+                    content=f"# Introduction to {topic}\n\nThis lesson covers {topic} for grade {grade}.",
+                ),
+                LessonSection(
+                    type=LessonSectionType.EXAMPLE,
+                    content=f"## Example\n\nHere's an example of {topic}...",
+                ),
+                LessonSection(
+                    type=LessonSectionType.PRACTICE,
+                    content=f"## Practice\n\nTry these practice problems...",
+                ),
+            ],
+        )
 
     # Validate lesson
     validation_result = curriculum_validator.validate_lesson(
@@ -207,8 +220,16 @@ def generate_lesson_handler(params: dict[str, Any]) -> dict[str, Any]:
         grade=grade,
         target_standards=curriculum_standards,
     )
+    
+    # Record validation success metric
+    validation_success = validation_result.status == "passed"
+    monitoring.record_success(
+        MetricName.VALIDATION_SUCCESS_RATE,
+        validation_success,
+        dimensions={"ContentType": "lesson", "Subject": subject},
+    )
 
-    if not validation_result.status == "passed":
+    if not validation_success:
         logger.warning("Lesson validation failed", extra={"issues": validation_result.issues})
         # In production, regenerate lesson
 

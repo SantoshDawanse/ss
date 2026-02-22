@@ -2,64 +2,94 @@
  * Hint Repository for database operations.
  */
 
-import { DatabaseManager } from '../DatabaseManager';
+import { BaseRepository } from './BaseRepository';
 import { Hint } from '../../models';
 
-export class HintRepository {
-  constructor(private dbManager: DatabaseManager) {}
+export interface HintRow {
+  hint_id: string;
+  quiz_id: string;
+  question_id: string;
+  level: number;
+  hint_text: string;
+}
 
+export class HintRepository extends BaseRepository<HintRow> {
+  constructor() {
+    super('hints');
+  }
+
+  protected getIdColumn(): string {
+    return 'hint_id';
+  }
+
+  /**
+   * Insert a new hint.
+   */
+  async insert(hint: Hint, quizId: string, questionId: string): Promise<void> {
+    try {
+      await this.execute(
+        `INSERT INTO ${this.tableName} (hint_id, quiz_id, question_id, level, hint_text) 
+         VALUES (?, ?, ?, ?, ?)`,
+        [hint.hintId, quizId, questionId, hint.level, hint.text]
+      );
+    } catch (error) {
+      console.error('Error inserting hint:', error);
+      throw new Error(`Failed to insert hint: ${error}`);
+    }
+  }
+
+  /**
+   * Create a new hint (accepts HintRow format).
+   */
+  async create(hint: HintRow): Promise<void> {
+    try {
+      await this.execute(
+        `INSERT INTO ${this.tableName} (hint_id, quiz_id, question_id, level, hint_text) 
+         VALUES (?, ?, ?, ?, ?)`,
+        [hint.hint_id, hint.quiz_id, hint.question_id, hint.level, hint.hint_text]
+      );
+    } catch (error) {
+      console.error('Error creating hint:', error);
+      throw new Error(`Failed to create hint: ${error}`);
+    }
+  }
+
+  /**
+   * Find hints by quiz and question.
+   */
   async findByQuizAndQuestion(
     quizId: string,
     questionId: string
   ): Promise<Hint[]> {
-    const db = await this.dbManager.getDatabase();
-    const result = await db.executeSql(
-      'SELECT * FROM hints WHERE quiz_id = ? AND question_id = ? ORDER BY level',
-      [quizId, questionId]
-    );
+    try {
+      const result = await this.query(
+        'SELECT * FROM hints WHERE quiz_id = ? AND question_id = ? ORDER BY level',
+        [quizId, questionId]
+      );
 
-    const hints: Hint[] = [];
-    for (let i = 0; i < result[0].rows.length; i++) {
-      hints.push(this.mapRowToHint(result[0].rows.item(i)));
+      return result.map(row => this.mapRowToHint(row));
+    } catch (error) {
+      console.error('Error finding hints:', error);
+      throw new Error(`Failed to find hints: ${error}`);
     }
-
-    return hints;
   }
 
-  async findById(hintId: string): Promise<Hint | null> {
-    const db = await this.dbManager.getDatabase();
-    const result = await db.executeSql(
-      'SELECT * FROM hints WHERE hint_id = ?',
-      [hintId]
-    );
-
-    if (result[0].rows.length === 0) {
-      return null;
-    }
-
-    return this.mapRowToHint(result[0].rows.item(0));
-  }
-
-  async create(hint: Hint, quizId: string, questionId: string): Promise<void> {
-    const db = await this.dbManager.getDatabase();
-    await db.executeSql(
-      `INSERT INTO hints (hint_id, quiz_id, question_id, level, hint_text) 
-       VALUES (?, ?, ?, ?, ?)`,
-      [hint.hintId, quizId, questionId, hint.level, hint.text]
-    );
-  }
-
-  async delete(hintId: string): Promise<void> {
-    const db = await this.dbManager.getDatabase();
-    await db.executeSql('DELETE FROM hints WHERE hint_id = ?', [hintId]);
-  }
-
+  /**
+   * Delete hints by quiz.
+   */
   async deleteByQuiz(quizId: string): Promise<void> {
-    const db = await this.dbManager.getDatabase();
-    await db.executeSql('DELETE FROM hints WHERE quiz_id = ?', [quizId]);
+    try {
+      await this.execute('DELETE FROM hints WHERE quiz_id = ?', [quizId]);
+    } catch (error) {
+      console.error('Error deleting hints:', error);
+      throw new Error(`Failed to delete hints: ${error}`);
+    }
   }
 
-  private mapRowToHint(row: any): Hint {
+  /**
+   * Map row to Hint.
+   */
+  private mapRowToHint(row: HintRow): Hint {
     return {
       hintId: row.hint_id,
       level: row.level,

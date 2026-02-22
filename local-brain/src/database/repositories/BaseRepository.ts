@@ -4,60 +4,58 @@
  */
 
 import { DatabaseManager } from '../DatabaseManager';
-import SQLite from 'react-native-sqlite-storage';
 
 export abstract class BaseRepository<T> {
-  protected dbManager: DatabaseManager;
+  protected dbManager!: DatabaseManager;
   protected tableName: string;
 
   constructor(tableName: string) {
-    this.dbManager = DatabaseManager.getInstance();
     this.tableName = tableName;
+  }
+
+  /**
+   * Set the database manager instance.
+   * Called by DatabaseManager after initialization.
+   */
+  public setDatabaseManager(dbManager: DatabaseManager): void {
+    this.dbManager = dbManager;
   }
 
   /**
    * Execute a SQL query and return results.
    */
-  protected async query(
-    sql: string,
-    params: any[] = [],
-  ): Promise<SQLite.ResultSet> {
-    const [result] = await this.dbManager.executeSql(sql, params);
-    return result;
+  protected async query(sql: string, params: any[] = []): Promise<any[]> {
+    return await this.dbManager.executeSql(sql, params);
   }
 
   /**
    * Execute a SQL statement (INSERT, UPDATE, DELETE).
    */
   protected async execute(sql: string, params: any[] = []): Promise<void> {
-    await this.dbManager.executeSql(sql, params);
+    await this.dbManager.runSql(sql, params);
   }
 
   /**
    * Execute multiple operations in a transaction.
    */
   protected async executeTransaction(
-    operations: (tx: SQLite.Transaction) => Promise<void>,
+    callback: () => Promise<void>,
   ): Promise<void> {
-    await this.dbManager.transaction(operations);
+    await this.dbManager.transaction(callback);
   }
 
   /**
-   * Convert ResultSet row to typed object.
+   * Convert row to typed object.
    */
   protected rowToObject(row: any): T {
     return row as T;
   }
 
   /**
-   * Convert ResultSet to array of typed objects.
+   * Convert array of rows to array of typed objects.
    */
-  protected resultSetToArray(resultSet: SQLite.ResultSet): T[] {
-    const items: T[] = [];
-    for (let i = 0; i < resultSet.rows.length; i++) {
-      items.push(this.rowToObject(resultSet.rows.item(i)));
-    }
-    return items;
+  protected resultSetToArray(rows: any[]): T[] {
+    return rows.map(row => this.rowToObject(row));
   }
 
   /**
@@ -71,11 +69,11 @@ export abstract class BaseRepository<T> {
         [id],
       );
 
-      if (result.rows.length === 0) {
+      if (result.length === 0) {
         return null;
       }
 
-      return this.rowToObject(result.rows.item(0));
+      return this.rowToObject(result[0]);
     } catch (error) {
       console.error(`Error finding ${this.tableName} by ID:`, error);
       throw new Error(`Failed to find ${this.tableName}: ${error}`);
@@ -119,7 +117,7 @@ export abstract class BaseRepository<T> {
       const result = await this.query(
         `SELECT COUNT(*) as count FROM ${this.tableName}`,
       );
-      return result.rows.item(0).count;
+      return result[0].count;
     } catch (error) {
       console.error(`Error counting ${this.tableName}:`, error);
       throw new Error(`Failed to count ${this.tableName}: ${error}`);

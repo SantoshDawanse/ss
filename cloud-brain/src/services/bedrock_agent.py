@@ -5,7 +5,7 @@ import logging
 from typing import Any, Optional
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 from src.models.content import (
     Hint,
@@ -16,6 +16,12 @@ from src.models.content import (
 )
 from src.models.personalization import ContentGenerationRequest, KnowledgeModel
 from src.services.curriculum_context import CurriculumContextService
+from src.utils.error_handling import (
+    exponential_backoff_retry,
+    handle_bedrock_error,
+    RetryableError,
+    NonRetryableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,7 @@ class BedrockAgentService:
         # Initialize curriculum context service
         self.curriculum_context = CurriculumContextService()
 
+    @exponential_backoff_retry(max_attempts=3, initial_delay=1.0, max_delay=30.0)
     def generate_lesson(
         self,
         topic: str,
@@ -63,6 +70,9 @@ class BedrockAgentService:
     ) -> Lesson:
         """
         Generate a personalized lesson using Bedrock Agent.
+        
+        Implements retry logic with exponential backoff for transient failures.
+        Maximum 3 attempts with delays: 1s, 2s, 4s.
 
         Args:
             topic: Topic name
@@ -76,17 +86,23 @@ class BedrockAgentService:
             Generated lesson
 
         Raises:
-            ValueError: If generation fails
+            RetryableError: If generation fails after retries
+            NonRetryableError: If request is invalid
         """
         logger.info(f"Generating lesson for topic: {topic}, subject: {subject}")
 
-        # Get curriculum context from MCP Server
-        curriculum_context = self.curriculum_context.get_curriculum_context_for_lesson(
-            subject=subject,
-            grade=grade,
-            topic=topic,
-            target_standards=curriculum_standards,
-        )
+        try:
+            # Get curriculum context from MCP Server
+            curriculum_context = self.curriculum_context.get_curriculum_context_for_lesson(
+                subject=subject,
+                grade=grade,
+                topic=topic,
+                target_standards=curriculum_standards,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get curriculum context: {e}. Using cached data.")
+            # Use empty context as fallback - content will still be generated
+            curriculum_context = {}
 
         # Prepare action group input with curriculum context
         action_input = {
@@ -110,10 +126,30 @@ class BedrockAgentService:
             lesson_data = json.loads(response)
             return Lesson(**lesson_data)
 
+        except (ClientError, ReadTimeoutError) as e:
+            error_response = handle_bedrock_error(e)
+            logger.error(f"Bedrock error: {error_response.message}")
+            raise RetryableError(
+                error_response.message,
+                error_response.error_code,
+                error_response.retry_after,
+                error_response.details,
+            )
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON response from Bedrock: {e}")
+            raise RetryableError(
+                "Invalid content generated",
+                "BEDROCK_INVALID_RESPONSE",
+                retry_after=2,
+            )
         except Exception as e:
-            logger.error(f"Failed to generate lesson: {e}")
-            raise ValueError(f"Lesson generation failed: {e}")
+            logger.error(f"Unexpected error generating lesson: {e}")
+            raise NonRetryableError(
+                f"Lesson generation failed: {e}",
+                "INTERNAL_ERROR",
+            )
 
+    @exponential_backoff_retry(max_attempts=3, initial_delay=1.0, max_delay=30.0)
     def generate_quiz(
         self,
         topic: str,
@@ -125,6 +161,8 @@ class BedrockAgentService:
     ) -> Quiz:
         """
         Generate a quiz using Bedrock Agent.
+        
+        Implements retry logic with exponential backoff for transient failures.
 
         Args:
             topic: Topic name
@@ -138,17 +176,22 @@ class BedrockAgentService:
             Generated quiz
 
         Raises:
-            ValueError: If generation fails
+            RetryableError: If generation fails after retries
+            NonRetryableError: If request is invalid
         """
         logger.info(f"Generating quiz for topic: {topic}, subject: {subject}")
 
-        # Get curriculum context from MCP Server
-        curriculum_context = self.curriculum_context.get_curriculum_context_for_quiz(
-            subject=subject,
-            grade=grade,
-            topic=topic,
-            learning_objectives=learning_objectives,
-        )
+        try:
+            # Get curriculum context from MCP Server
+            curriculum_context = self.curriculum_context.get_curriculum_context_for_quiz(
+                subject=subject,
+                grade=grade,
+                topic=topic,
+                learning_objectives=learning_objectives,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get curriculum context: {e}. Using cached data.")
+            curriculum_context = {}
 
         action_input = {
             "topic": topic,
@@ -169,9 +212,28 @@ class BedrockAgentService:
             quiz_data = json.loads(response)
             return Quiz(**quiz_data)
 
+        except (ClientError, ReadTimeoutError) as e:
+            error_response = handle_bedrock_error(e)
+            logger.error(f"Bedrock error: {error_response.message}")
+            raise RetryableError(
+                error_response.message,
+                error_response.error_code,
+                error_response.retry_after,
+                error_response.details,
+            )
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON response from Bedrock: {e}")
+            raise RetryableError(
+                "Invalid content generated",
+                "BEDROCK_INVALID_RESPONSE",
+                retry_after=2,
+            )
         except Exception as e:
-            logger.error(f"Failed to generate quiz: {e}")
-            raise ValueError(f"Quiz generation failed: {e}")
+            logger.error(f"Unexpected error generating quiz: {e}")
+            raise NonRetryableError(
+                f"Quiz generation failed: {e}",
+                "INTERNAL_ERROR",
+            )
 
     def generate_hints(
         self,

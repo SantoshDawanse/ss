@@ -36,15 +36,15 @@ describe('Database Layer', () => {
 
     await dbManager.initialize();
 
-    // Initialize repositories
-    bundleRepo = new LearningBundleRepository();
-    lessonRepo = new LessonRepository();
-    quizRepo = new QuizRepository();
-    hintRepo = new HintRepository();
-    logRepo = new PerformanceLogRepository();
-    syncRepo = new SyncSessionRepository();
-    stateRepo = new StudentStateRepository();
-    trackRepo = new StudyTrackRepository();
+    // Use repositories from DatabaseManager (they have dbManager set)
+    bundleRepo = dbManager.learningBundleRepository;
+    lessonRepo = dbManager.lessonRepository;
+    quizRepo = dbManager.quizRepository;
+    hintRepo = dbManager.hintRepository;
+    logRepo = dbManager.performanceLogRepository;
+    syncRepo = dbManager.syncSessionRepository;
+    stateRepo = dbManager.studentStateRepository;
+    trackRepo = dbManager.studyTrackRepository;
   });
 
   beforeEach(async () => {
@@ -55,6 +55,8 @@ describe('Database Layer', () => {
   afterAll(async () => {
     // Close database connection
     await dbManager.close();
+    // Reset singleton for other tests
+    (DatabaseManager as any).resetInstance();
   });
 
   describe('DatabaseManager', () => {
@@ -712,10 +714,10 @@ describe('Database Layer', () => {
         status: 'active',
       });
 
-      await dbManager.transaction(async tx => {
+      await dbManager.transaction(async () => {
         // Create multiple lessons in transaction
         for (let i = 1; i <= 3; i++) {
-          await tx.executeSql(
+          await dbManager.runSql(
             `INSERT INTO lessons 
             (lesson_id, bundle_id, subject, topic, title, difficulty, 
              content_json, estimated_minutes, curriculum_standards)
@@ -751,9 +753,9 @@ describe('Database Layer', () => {
         status: 'active',
       });
 
-      await dbManager.transaction(async tx => {
+      await dbManager.transaction(async () => {
         // Create lesson
-        await tx.executeSql(
+        await dbManager.runSql(
           `INSERT INTO lessons 
           (lesson_id, bundle_id, subject, topic, title, difficulty, 
            content_json, estimated_minutes, curriculum_standards)
@@ -772,7 +774,7 @@ describe('Database Layer', () => {
         );
 
         // Create quiz
-        await tx.executeSql(
+        await dbManager.runSql(
           `INSERT INTO quizzes 
           (quiz_id, bundle_id, subject, topic, title, difficulty, time_limit, questions_json)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -780,7 +782,7 @@ describe('Database Layer', () => {
         );
 
         // Create hint
-        await tx.executeSql(
+        await dbManager.runSql(
           `INSERT INTO hints 
           (hint_id, quiz_id, question_id, level, hint_text)
           VALUES (?, ?, ?, ?, ?)`,

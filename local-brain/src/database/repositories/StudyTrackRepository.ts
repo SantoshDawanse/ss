@@ -39,6 +39,23 @@ export class StudyTrackRepository extends BaseRepository<StudyTrackRow> {
   }
 
   /**
+   * Insert a new study track (accepts StudyTrack model).
+   */
+  public async insert(track: StudyTrack, bundleId: string): Promise<void> {
+    try {
+      await this.execute(
+        `INSERT INTO ${this.tableName} 
+        (track_id, bundle_id, subject, weeks_json)
+        VALUES (?, ?, ?, ?)`,
+        [track.trackId, bundleId, track.subject, JSON.stringify(track.weeks)],
+      );
+    } catch (error) {
+      console.error('Error inserting study track:', error);
+      throw new Error(`Failed to insert study track: ${error}`);
+    }
+  }
+
+  /**
    * Bulk insert study tracks in a transaction.
    */
   public async bulkCreate(tracks: StudyTrackRow[]): Promise<void> {
@@ -91,11 +108,11 @@ export class StudyTrackRepository extends BaseRepository<StudyTrackRow> {
         [bundleId, subject],
       );
 
-      if (result.rows.length === 0) {
+      if (result.length === 0) {
         return null;
       }
 
-      return this.rowToObject(result.rows.item(0));
+      return this.rowToObject(result[0]);
     } catch (error) {
       console.error('Error finding study track by bundle/subject:', error);
       throw new Error(`Failed to find study track: ${error}`);

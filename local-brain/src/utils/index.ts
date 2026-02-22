@@ -5,3 +5,5 @@
 export * from './compression';
 export * from './encryption';
 export * from './validation';
+export * from './initializeDatabase';
+export * from './sampleData';

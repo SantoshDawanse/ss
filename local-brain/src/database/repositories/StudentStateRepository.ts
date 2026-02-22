@@ -23,9 +23,18 @@ export class StudentStateRepository extends BaseRepository<StudentStateRow> {
 
   /**
    * Create or update student state (upsert).
+   * Accepts both StudentState (with Date) and StudentStateRow (with number timestamp).
    */
-  public async upsert(state: StudentStateRow): Promise<void> {
+  public async upsert(state: StudentState | StudentStateRow): Promise<void> {
     try {
+      // Handle both StudentState and StudentStateRow formats
+      const studentId = 'studentId' in state ? state.studentId : state.student_id;
+      const currentSubject = 'currentSubject' in state ? state.currentSubject : state.current_subject;
+      const currentLessonId = 'currentLessonId' in state ? state.currentLessonId : state.current_lesson_id;
+      const lastActive = 'lastActive' in state 
+        ? (typeof state.lastActive === 'number' ? state.lastActive : state.lastActive.getTime())
+        : state.last_active;
+        
       await this.execute(
         `INSERT INTO ${this.tableName} 
         (student_id, current_subject, current_lesson_id, last_active)
@@ -35,10 +44,10 @@ export class StudentStateRepository extends BaseRepository<StudentStateRow> {
           current_lesson_id = excluded.current_lesson_id,
           last_active = excluded.last_active`,
         [
-          state.student_id,
-          state.current_subject,
-          state.current_lesson_id,
-          state.last_active,
+          studentId,
+          currentSubject || null,
+          currentLessonId || null,
+          lastActive,
         ],
       );
     } catch (error) {

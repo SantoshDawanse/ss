@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import traceback
+from datetime import datetime
 from typing import Any
 
 from aws_lambda_powertools import Logger
@@ -21,7 +22,17 @@ from src.models.sync import (
 from src.repositories.knowledge_model_repository import KnowledgeModelRepository
 from src.repositories.sync_session_repository import SyncSessionRepository
 from src.services.personalization_engine import PersonalizationEngine
-from utils.auth import authenticate_request, AuthError
+from src.utils.auth import authenticate_request, AuthError
+from src.utils.error_handling import (
+    ErrorCode,
+    create_error_response,
+    exponential_backoff_retry,
+)
+from src.utils.monitoring import (
+    get_monitoring_service,
+    LatencyTimer,
+    MetricName,
+)
 
 logger = Logger()
 
@@ -50,7 +61,7 @@ def _create_response(status_code: int, body: dict) -> dict:
 
 def _create_error_response(status_code: int, message: str, error_code: str = None) -> dict:
     """
-    Create error response.
+    Create structured error response.
 
     Args:
         status_code: HTTP status code
@@ -58,13 +69,16 @@ def _create_error_response(status_code: int, message: str, error_code: str = Non
         error_code: Optional error code
 
     Returns:
-        API Gateway error response
+        API Gateway error response with structured format
     """
-    body = {
-        "error": message,
-        "errorCode": error_code or f"ERROR_{status_code}",
-    }
-    return _create_response(status_code, body)
+    error_resp = create_error_response(
+        error_code=error_code or f"ERROR_{status_code}",
+        message=message,
+        retryable=status_code in [408, 429, 500, 502, 503, 504],
+        retry_after=5 if status_code in [429, 503] else None,
+    )
+    
+    return _create_response(status_code, error_resp.to_dict())
 
 
 @logger.inject_lambda_context
@@ -82,6 +96,9 @@ def upload(event: dict, context: LambdaContext) -> dict:
     Returns:
         API Gateway response
     """
+    monitoring = get_monitoring_service()
+    sync_success = False
+    
     try:
         # Authenticate request
         try:
@@ -141,7 +158,11 @@ def upload(event: dict, context: LambdaContext) -> dict:
             sync_repo.update_session_status(
                 session.session_id, SyncStatus.FAILED, str(e)
             )
-            return _create_error_response(400, "Invalid log format", "INVALID_LOGS")
+            return _create_error_response(
+                400,
+                "Invalid log format",
+                ErrorCode.INVALID_LOGS,
+            )
 
         # Calculate checksum
         logs_json = json.dumps(logs_data, sort_keys=True)
@@ -207,12 +228,20 @@ def upload(event: dict, context: LambdaContext) -> dict:
         )
 
         logger.info(f"Upload completed successfully for session {session.session_id}")
+        sync_success = True
         return _create_response(200, response.model_dump())
 
     except Exception as e:
         logger.error(f"Unexpected error in upload handler: {str(e)}")
         logger.error(traceback.format_exc())
         return _create_error_response(500, "Internal server error", "INTERNAL_ERROR")
+    finally:
+        # Record sync completion metric
+        monitoring.record_success(
+            MetricName.SYNC_COMPLETION_RATE,
+            sync_success,
+            dimensions={"SyncType": "upload"},
+        )
 
 
 def _decompress_logs(logs: list[dict]) -> list[dict]:
@@ -289,6 +318,9 @@ def download(event: dict, context: LambdaContext) -> dict:
     Returns:
         API Gateway response
     """
+    monitoring = get_monitoring_service()
+    sync_success = False
+    
     try:
         # Authenticate request
         try:
@@ -354,12 +386,17 @@ def download(event: dict, context: LambdaContext) -> dict:
                     },
                 )
                 
-                # Generate bundle
-                bundle_metadata = bundle_generator.generate_bundle(
-                    student_id=student_id,
-                    knowledge_model=knowledge_model,
-                    performance_logs=session.upload.performance_logs if session.upload else [],
-                )
+                # Generate bundle with latency tracking
+                with LatencyTimer(
+                    monitoring,
+                    MetricName.BUNDLE_GENERATION_LATENCY,
+                    dimensions={"StudentId": student_id},
+                ):
+                    bundle_metadata = bundle_generator.generate_bundle(
+                        student_id=student_id,
+                        knowledge_model=knowledge_model,
+                        performance_logs=session.upload.performance_logs if session.upload else [],
+                    )
                 
                 # Update checkpoint after bundle generation
                 sync_repo.update_checkpoint(
@@ -419,9 +456,17 @@ def download(event: dict, context: LambdaContext) -> dict:
         )
 
         logger.info(f"Download completed successfully for session {session_id}")
+        sync_success = True
         return _create_response(200, response.model_dump())
 
     except Exception as e:
         logger.error(f"Unexpected error in download handler: {str(e)}")
         logger.error(traceback.format_exc())
         return _create_error_response(500, "Internal server error", "INTERNAL_ERROR")
+    finally:
+        # Record sync completion metric
+        monitoring.record_success(
+            MetricName.SYNC_COMPLETION_RATE,
+            sync_success,
+            dimensions={"SyncType": "download"},
+        )

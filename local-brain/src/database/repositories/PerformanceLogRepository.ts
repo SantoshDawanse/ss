@@ -37,7 +37,8 @@ export class PerformanceLogRepository extends BaseRepository<PerformanceLogRow> 
    */
   public async create(log: Omit<PerformanceLogRow, 'log_id'>): Promise<number> {
     try {
-      const result = await this.query(
+      // Use runSql which returns the result with lastInsertRowId
+      const result = await this.dbManager.runSql(
         `INSERT INTO ${this.tableName} 
         (student_id, timestamp, event_type, content_id, subject, topic, data_json, synced)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -53,7 +54,7 @@ export class PerformanceLogRepository extends BaseRepository<PerformanceLogRow> 
         ],
       );
 
-      return result.insertId;
+      return result.lastInsertRowId;
     } catch (error) {
       console.error('Error creating performance log:', error);
       throw new Error(`Failed to create performance log: ${error}`);
@@ -185,7 +186,7 @@ export class PerformanceLogRepository extends BaseRepository<PerformanceLogRow> 
       const result = await this.query(
         `SELECT COUNT(*) as count FROM ${this.tableName} WHERE synced = 0`,
       );
-      return result.rows.item(0).count;
+      return result[0].count;
     } catch (error) {
       console.error('Error counting unsynced logs:', error);
       throw new Error(`Failed to count unsynced logs: ${error}`);

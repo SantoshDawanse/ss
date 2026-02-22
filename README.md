@@ -120,8 +120,22 @@ The project uses a dual testing approach:
 
 ## Documentation
 
+### Getting Started
+- [Start Here](docs/START_HERE.md) - Quick start guide
+- [Quick Start](docs/QUICK_START.md) - 5-minute setup
+- [Local Setup Guide](docs/LOCAL_SETUP_GUIDE.md) - Detailed setup instructions
+- [Troubleshooting](TROUBLESHOOTING.md) - Common issues and solutions
+
+### Architecture & Components
+- [System Components](docs/SYSTEM_COMPONENTS.md) - Architecture overview
+- [Dashboard Setup](docs/DASHBOARD_SETUP.md) - Web dashboard configuration
+
+### Component Documentation
 - [Cloud Brain README](cloud-brain/README.md)
 - [Local Brain README](local-brain/README.md)
+- [Web Dashboard README](cloud-brain/web/README.md)
+
+### Specifications
 - [Requirements Document](.kiro/specs/sikshya-sathi-system/requirements.md)
 - [Design Document](.kiro/specs/sikshya-sathi-system/design.md)
 - [Implementation Tasks](.kiro/specs/sikshya-sathi-system/tasks.md)

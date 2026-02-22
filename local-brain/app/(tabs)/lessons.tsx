@@ -1,0 +1,132 @@
+/**
+ * Lessons Screen - Browse and view lessons
+ */
+
+import React, { useEffect, useState } from 'react';
+import { View, Text, FlatList, TouchableOpacity } from 'react-native';
+import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { useApp } from '@/src/contexts/AppContext';
+import { Lesson } from '@/src/models';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Loading } from '@/components/ui/loading';
+
+export default function LessonsScreen() {
+  const router = useRouter();
+  const { contentService, studentId, isInitialized } = useApp();
+  const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (isInitialized && contentService) {
+      loadLessons();
+    }
+  }, [isInitialized, contentService]);
+
+  const loadLessons = async () => {
+    try {
+      setLoading(true);
+      const nextLesson = await contentService!.getNextLesson(studentId, 'Mathematics');
+      
+      if (nextLesson) {
+        setLessons([nextLesson]);
+      }
+    } catch (error) {
+      console.error('Error loading lessons:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLessonPress = (lesson: Lesson) => {
+    router.push({
+      pathname: '/lesson-view',
+      params: { lessonId: lesson.lessonId },
+    });
+  };
+
+  const getDifficultyVariant = (difficulty: string) => {
+    switch (difficulty.toLowerCase()) {
+      case 'easy': return 'success';
+      case 'medium': return 'warning';
+      case 'hard': return 'error';
+      default: return 'default';
+    }
+  };
+
+  if (!isInitialized) {
+    return <Loading message="Initializing..." />;
+  }
+
+  if (loading) {
+    return <Loading message="Loading lessons..." />;
+  }
+
+  return (
+    <SafeAreaView className="flex-1 bg-neutral-50" edges={['top']}>
+      {/* Header */}
+      <View className="px-6 pt-6 pb-4 bg-white border-b border-neutral-200">
+        <Text className="text-3xl font-bold text-neutral-900 mb-1">📚 Lessons</Text>
+        <Text className="text-sm text-neutral-600">Continue your learning journey</Text>
+      </View>
+
+      {lessons.length === 0 ? (
+        <View className="flex-1 justify-center items-center px-6">
+          <View className="w-20 h-20 rounded-full bg-neutral-100 items-center justify-center mb-4">
+            <Ionicons name="book-outline" size={40} color="#9E9E9E" />
+          </View>
+          <Text className="text-lg font-semibold text-neutral-700 mb-2">No lessons available</Text>
+          <Text className="text-sm text-neutral-500 text-center">
+            Check back later for new content
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={lessons}
+          keyExtractor={(item) => item.lessonId}
+          showsVerticalScrollIndicator={false}
+          renderItem={({ item }) => (
+            <TouchableOpacity 
+              onPress={() => handleLessonPress(item)}
+              activeOpacity={0.7}
+            >
+              <Card variant="elevated" padding="lg" style={{ marginBottom: 12 }}>
+                <View className="flex-row justify-between items-start mb-3">
+                  <View className="flex-1 mr-3">
+                    <Text className="text-lg font-bold text-neutral-900 mb-2">
+                      {item.title}
+                    </Text>
+                    <View className="flex-row items-center mb-2">
+                      <Ionicons name="folder-outline" size={14} color="#666666" />
+                      <Text className="text-sm text-neutral-600 ml-1">
+                        {item.subject} • {item.topic}
+                      </Text>
+                    </View>
+                    <View className="flex-row items-center">
+                      <Ionicons name="time-outline" size={14} color="#2196F3" />
+                      <Text className="text-sm text-primary-500 ml-1">
+                        {item.estimatedMinutes} minutes
+                      </Text>
+                    </View>
+                  </View>
+                  <Badge variant={getDifficultyVariant(item.difficulty)} size="sm">
+                    {item.difficulty}
+                  </Badge>
+                </View>
+                <View className="flex-row items-center justify-end">
+                  <Text className="text-sm font-semibold text-primary-500 mr-1">
+                    Start Lesson
+                  </Text>
+                  <Ionicons name="arrow-forward" size={16} color="#2196F3" />
+                </View>
+              </Card>
+            </TouchableOpacity>
+          )}
+          contentContainerStyle={{ padding: 16 }}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
