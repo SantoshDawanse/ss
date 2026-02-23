@@ -5,17 +5,19 @@
  */
 
 import React from 'react';
-import { View, Text, ScrollView, Image } from 'react-native';
+import { View, Text, ScrollView, Image, TouchableOpacity } from 'react-native';
 import { Lesson, LessonSection } from '../models';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Ionicons } from '@expo/vector-icons';
 
 interface LessonDisplayProps {
   lesson: Lesson;
   onComplete?: () => void;
 }
 
-export const LessonDisplay: React.FC<LessonDisplayProps> = ({ lesson }) => {
+export const LessonDisplay: React.FC<LessonDisplayProps> = ({ lesson, onComplete }) => {
   const renderSection = (section: LessonSection, index: number) => {
     return (
       <Card key={index} variant="elevated" padding="lg" style={{ marginBottom: 16 }}>
@@ -70,6 +72,25 @@ export const LessonDisplay: React.FC<LessonDisplayProps> = ({ lesson }) => {
 
         {/* Sections */}
         {lesson.sections.map((section, index) => renderSection(section, index))}
+
+        {/* Complete Button */}
+        {onComplete && (
+          <Card variant="elevated" padding="lg" style={{ marginTop: 8 }}>
+            <Button 
+              onPress={onComplete}
+              variant="primary"
+              size="lg"
+              fullWidth
+            >
+              <View className="flex-row items-center justify-center">
+                <Ionicons name="checkmark-circle" size={20} color="white" />
+                <Text className="text-white font-semibold ml-2">
+                  Complete Lesson
+                </Text>
+              </View>
+            </Button>
+          </Card>
+        )}
       </View>
     </ScrollView>
   );

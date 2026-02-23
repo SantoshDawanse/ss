@@ -49,6 +49,7 @@ class CloudBrainStack(Stack):
         self.content_generation_handler = self._create_content_generation_handler()
         self.sync_upload_handler = self._create_sync_upload_handler()
         self.sync_download_handler = self._create_sync_download_handler()
+        self.educator_handler = self._create_educator_handler()
 
         # API Gateway
         self.api = self._create_api_gateway()
@@ -195,17 +196,6 @@ class CloudBrainStack(Stack):
 
     def _create_content_generation_handler(self) -> lambda_.Function:
         """Create Lambda function for content generation."""
-        # Create log group with retention
-        log_group = logs.LogGroup(
-            self,
-            "ContentGenerationLogGroup",
-            log_group_name=f"/aws/lambda/sikshya-sathi-content-gen-{self.env_name}",
-            retention=logs.RetentionDays.ONE_MONTH
-            if self.env_name == "production"
-            else logs.RetentionDays.ONE_WEEK,
-            removal_policy=RemovalPolicy.DESTROY,
-        )
-        
         handler = lambda_.Function(
             self,
             "ContentGenerationHandler",
@@ -228,9 +218,6 @@ class CloudBrainStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=1024,
             architecture=lambda_.Architecture.X86_64,
-            log_retention=logs.RetentionDays.ONE_MONTH
-            if self.env_name == "production"
-            else logs.RetentionDays.ONE_WEEK,
             environment={
                 "ENVIRONMENT": self.env_name,
                 "STUDENTS_TABLE": self.students_table.table_name,
@@ -274,17 +261,6 @@ class CloudBrainStack(Stack):
 
     def _create_sync_upload_handler(self) -> lambda_.Function:
         """Create Lambda function for sync upload."""
-        # Create log group with retention
-        log_group = logs.LogGroup(
-            self,
-            "SyncUploadLogGroup",
-            log_group_name=f"/aws/lambda/sikshya-sathi-sync-upload-{self.env_name}",
-            retention=logs.RetentionDays.ONE_MONTH
-            if self.env_name == "production"
-            else logs.RetentionDays.ONE_WEEK,
-            removal_policy=RemovalPolicy.DESTROY,
-        )
-        
         handler = lambda_.Function(
             self,
             "SyncUploadHandler",
@@ -307,9 +283,6 @@ class CloudBrainStack(Stack):
             timeout=Duration.seconds(30),
             memory_size=512,
             architecture=lambda_.Architecture.X86_64,
-            log_retention=logs.RetentionDays.ONE_MONTH
-            if self.env_name == "production"
-            else logs.RetentionDays.ONE_WEEK,
             environment={
                 "ENVIRONMENT": self.env_name,
                 "STUDENTS_TABLE": self.students_table.table_name,
@@ -341,17 +314,6 @@ class CloudBrainStack(Stack):
 
     def _create_sync_download_handler(self) -> lambda_.Function:
         """Create Lambda function for sync download."""
-        # Create log group with retention
-        log_group = logs.LogGroup(
-            self,
-            "SyncDownloadLogGroup",
-            log_group_name=f"/aws/lambda/sikshya-sathi-sync-download-{self.env_name}",
-            retention=logs.RetentionDays.ONE_MONTH
-            if self.env_name == "production"
-            else logs.RetentionDays.ONE_WEEK,
-            removal_policy=RemovalPolicy.DESTROY,
-        )
-        
         handler = lambda_.Function(
             self,
             "SyncDownloadHandler",
@@ -374,9 +336,6 @@ class CloudBrainStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=1024,
             architecture=lambda_.Architecture.X86_64,
-            log_retention=logs.RetentionDays.ONE_MONTH
-            if self.env_name == "production"
-            else logs.RetentionDays.ONE_WEEK,
             environment={
                 "ENVIRONMENT": self.env_name,
                 "STUDENTS_TABLE": self.students_table.table_name,
@@ -421,6 +380,59 @@ class CloudBrainStack(Stack):
 
         return handler
 
+    def _create_educator_handler(self) -> lambda_.Function:
+        """Create Lambda function for educator dashboard and tools."""
+        handler = lambda_.Function(
+            self,
+            "EducatorHandler",
+            function_name=f"sikshya-sathi-educator-{self.env_name}",
+            runtime=lambda_.Runtime.PYTHON_3_11,
+            handler="src.handlers.educator_handler.lambda_handler",
+            code=lambda_.Code.from_asset(
+                "..",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_11.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install --platform manylinux2014_x86_64 --only-binary=:all: -r src/requirements.txt -t /asset-output && "
+                        "cp -r src /asset-output/",
+                    ],
+                    output_type=BundlingOutput.AUTO_DISCOVER,
+                ),
+            ),
+            timeout=Duration.seconds(30),
+            memory_size=512,
+            architecture=lambda_.Architecture.X86_64,
+            environment={
+                "ENVIRONMENT": self.env_name,
+                "STUDENTS_TABLE": self.students_table.table_name,
+                "BUNDLES_TABLE": self.bundles_table.table_name,
+                "SYNC_SESSIONS_TABLE": self.sync_sessions_table.table_name,
+                "BUNDLES_BUCKET": self.bundles_bucket.bucket_name,
+                "JWT_SECRET": "dev-secret-change-in-production",  # TODO: Use Secrets Manager
+                "POWERTOOLS_SERVICE_NAME": "educator",
+                "POWERTOOLS_METRICS_NAMESPACE": "SikshyaSathi/CloudBrain",
+                "LOG_LEVEL": "INFO" if self.env_name == "production" else "DEBUG",
+            },
+        )
+
+        # Grant permissions
+        self.students_table.grant_read_write_data(handler)
+        self.bundles_table.grant_read_write_data(handler)
+        self.sync_sessions_table.grant_read_write_data(handler)
+        
+        # Grant CloudWatch metrics permissions
+        handler.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+            )
+        )
+
+        return handler
+
     def _create_api_gateway(self) -> apigw.RestApi:
         """Create API Gateway for sync endpoints."""
         api = apigw.RestApi(
@@ -443,7 +455,7 @@ class CloudBrainStack(Stack):
         # /sync resource
         sync = api.root.add_resource("sync")
 
-        # POST /sync/upload (requires authentication)
+        # POST /sync/upload
         upload = sync.add_resource("upload")
         upload.add_method(
             "POST",
@@ -451,7 +463,6 @@ class CloudBrainStack(Stack):
                 self.sync_upload_handler,
                 proxy=True,
             ),
-            authorization_type=apigw.AuthorizationType.CUSTOM,
             request_validator=apigw.RequestValidator(
                 self,
                 "UploadRequestValidator",
@@ -461,7 +472,7 @@ class CloudBrainStack(Stack):
             ),
         )
 
-        # GET /sync/download/{sessionId} (requires authentication)
+        # GET /sync/download/{sessionId}
         download = sync.add_resource("download")
         session = download.add_resource("{sessionId}")
         session.add_method(
@@ -470,7 +481,6 @@ class CloudBrainStack(Stack):
                 self.sync_download_handler,
                 proxy=True,
             ),
-            authorization_type=apigw.AuthorizationType.CUSTOM,
         )
 
         # GET /health (no authentication required)
@@ -489,6 +499,99 @@ class CloudBrainStack(Stack):
                 request_templates={"application/json": '{"statusCode": 200}'},
             ),
             method_responses=[apigw.MethodResponse(status_code="200")],
+        )
+
+        # /educator resource
+        educator = api.root.add_resource("educator")
+        
+        # GET /educator/dashboard
+        dashboard = educator.add_resource("dashboard")
+        dashboard.add_method(
+            "GET",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # GET /educator/student-progress
+        student_progress = educator.add_resource("student-progress")
+        student_progress.add_method(
+            "GET",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # GET /educator/class-report
+        class_report = educator.add_resource("class-report")
+        class_report.add_method(
+            "GET",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # GET /educator/curriculum-coverage
+        curriculum_coverage = educator.add_resource("curriculum-coverage")
+        curriculum_coverage.add_method(
+            "GET",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # POST /educator/assign-topics
+        assign_topics = educator.add_resource("assign-topics")
+        assign_topics.add_method(
+            "POST",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # POST /educator/customize-track
+        customize_track = educator.add_resource("customize-track")
+        customize_track.add_method(
+            "POST",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # GET /educator/assignments
+        assignments = educator.add_resource("assignments")
+        assignments.add_method(
+            "GET",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # GET /educator/review-queue
+        review_queue = educator.add_resource("review-queue")
+        review_queue.add_method(
+            "GET",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # POST /educator/review-content
+        review_content = educator.add_resource("review-content")
+        review_content.add_method(
+            "POST",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
         )
 
         return api

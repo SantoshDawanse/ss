@@ -5,6 +5,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '@/src/contexts/AppContext';
@@ -15,15 +16,25 @@ import { Loading } from '@/components/ui/loading';
 
 export default function LessonsScreen() {
   const router = useRouter();
-  const { contentService, studentId, isInitialized } = useApp();
+  const { contentService, performanceService, studentId, isInitialized } = useApp();
   const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [completedLessons, setCompletedLessons] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (isInitialized && contentService) {
+    if (isInitialized && contentService && performanceService) {
       loadLessons();
     }
-  }, [isInitialized, contentService]);
+  }, [isInitialized, contentService, performanceService]);
+
+  // Reload completion status when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isInitialized && performanceService) {
+        loadCompletedLessons();
+      }
+    }, [isInitialized, performanceService])
+  );
 
   const loadLessons = async () => {
     try {
@@ -37,6 +48,20 @@ export default function LessonsScreen() {
       console.error('Error loading lessons:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadCompletedLessons = async () => {
+    try {
+      const logs = await performanceService!.getLogsBySubject(studentId, 'Mathematics');
+      const completed = new Set(
+        logs
+          .filter(log => log.eventType === 'lesson_complete')
+          .map(log => log.contentId)
+      );
+      setCompletedLessons(completed);
+    } catch (error) {
+      console.error('Error loading completed lessons:', error);
     }
   };
 
@@ -87,43 +112,68 @@ export default function LessonsScreen() {
           data={lessons}
           keyExtractor={(item) => item.lessonId}
           showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <TouchableOpacity 
-              onPress={() => handleLessonPress(item)}
-              activeOpacity={0.7}
-            >
-              <Card variant="elevated" padding="lg" style={{ marginBottom: 12 }}>
-                <View className="flex-row justify-between items-start mb-3">
-                  <View className="flex-1 mr-3">
-                    <Text className="text-lg font-bold text-neutral-900 mb-2">
-                      {item.title}
-                    </Text>
-                    <View className="flex-row items-center mb-2">
-                      <Ionicons name="folder-outline" size={14} color="#666666" />
-                      <Text className="text-sm text-neutral-600 ml-1">
-                        {item.subject} • {item.topic}
-                      </Text>
+          renderItem={({ item }) => {
+            const isCompleted = completedLessons.has(item.lessonId);
+            
+            return (
+              <TouchableOpacity 
+                onPress={() => handleLessonPress(item)}
+                activeOpacity={0.7}
+              >
+                <Card variant="elevated" padding="lg" style={{ marginBottom: 12 }}>
+                  <View className="flex-row justify-between items-start mb-3">
+                    <View className="flex-1 mr-3">
+                      <View className="flex-row items-center mb-2">
+                        <Text className="text-lg font-bold text-neutral-900 flex-1">
+                          {item.title}
+                        </Text>
+                        {isCompleted && (
+                          <View className="ml-2">
+                            <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                          </View>
+                        )}
+                      </View>
+                      <View className="flex-row items-center mb-2">
+                        <Ionicons name="folder-outline" size={14} color="#666666" />
+                        <Text className="text-sm text-neutral-600 ml-1">
+                          {item.subject} • {item.topic}
+                        </Text>
+                      </View>
+                      <View className="flex-row items-center">
+                        <Ionicons name="time-outline" size={14} color="#2196F3" />
+                        <Text className="text-sm text-primary-500 ml-1">
+                          {item.estimatedMinutes} minutes
+                        </Text>
+                      </View>
                     </View>
-                    <View className="flex-row items-center">
-                      <Ionicons name="time-outline" size={14} color="#2196F3" />
-                      <Text className="text-sm text-primary-500 ml-1">
-                        {item.estimatedMinutes} minutes
-                      </Text>
-                    </View>
+                    <Badge variant={getDifficultyVariant(item.difficulty)} size="sm">
+                      {item.difficulty}
+                    </Badge>
                   </View>
-                  <Badge variant={getDifficultyVariant(item.difficulty)} size="sm">
-                    {item.difficulty}
-                  </Badge>
-                </View>
-                <View className="flex-row items-center justify-end">
-                  <Text className="text-sm font-semibold text-primary-500 mr-1">
-                    Start Lesson
-                  </Text>
-                  <Ionicons name="arrow-forward" size={16} color="#2196F3" />
-                </View>
-              </Card>
-            </TouchableOpacity>
-          )}
+                  {isCompleted ? (
+                    <View className="flex-row items-center justify-between">
+                      <Badge variant="success" size="sm">
+                        ✓ Completed
+                      </Badge>
+                      <View className="flex-row items-center">
+                        <Text className="text-sm font-semibold text-neutral-600 mr-1">
+                          Review
+                        </Text>
+                        <Ionicons name="refresh" size={16} color="#666666" />
+                      </View>
+                    </View>
+                  ) : (
+                    <View className="flex-row items-center justify-end">
+                      <Text className="text-sm font-semibold text-primary-500 mr-1">
+                        Start Lesson
+                      </Text>
+                      <Ionicons name="arrow-forward" size={16} color="#2196F3" />
+                    </View>
+                  )}
+                </Card>
+              </TouchableOpacity>
+            );
+          }}
           contentContainerStyle={{ padding: 16 }}
         />
       )}

@@ -97,7 +97,9 @@ const Crypto = {
 };
 
 // API Configuration
-const API_BASE_URL = 'https://api.sikshya-sathi.np/v1';
+import Constants from 'expo-constants';
+
+const API_BASE_URL = Constants.expoConfig?.extra?.apiBaseUrl || process.env.API_BASE_URL || 'https://zm3d9kk179.execute-api.us-east-1.amazonaws.com/development';
 const SYNC_UPLOAD_ENDPOINT = '/sync/upload';
 const SYNC_DOWNLOAD_ENDPOINT = '/sync/download';
 
@@ -240,10 +242,15 @@ export class SyncOrchestratorService {
       const syncStartTime = Date.now();
 
       // Execute upload workflow
-      await this.executeUploadWorkflow(sessionId);
+      const uploadResult = await this.executeUploadWorkflow(sessionId);
 
-      // Execute download workflow
-      await this.executeDownloadWorkflow(sessionId);
+      // Execute download workflow only if there were logs to upload
+      // or if the API indicates a bundle is available
+      if (uploadResult.shouldDownload) {
+        await this.executeDownloadWorkflow(sessionId);
+      } else {
+        console.log('Skipping download - no new data uploaded or API not available');
+      }
 
       // Complete sync session
       await this.dbManager.syncSessionRepository.complete(sessionId);
@@ -335,7 +342,7 @@ export class SyncOrchestratorService {
    * Execute upload workflow: compress logs, upload, receive acknowledgment.
    * Requirement 4.2: Upload performance logs
    */
-  private async executeUploadWorkflow(sessionId: string): Promise<void> {
+  private async executeUploadWorkflow(sessionId: string): Promise<{ shouldDownload: boolean; logsUploaded: number }> {
     this.transitionState('uploading');
     await this.dbManager.syncSessionRepository.updateStatus(sessionId, 'uploading');
 
@@ -345,9 +352,9 @@ export class SyncOrchestratorService {
     );
 
     if (unsyncedLogs.length === 0) {
-      console.log('No logs to upload');
+      console.log('No logs to upload - skipping sync');
       await this.dbManager.syncSessionRepository.updateLogsUploaded(sessionId, 0);
-      return;
+      return { shouldDownload: false, logsUploaded: 0 };
     }
 
     // Convert to PerformanceLog format
@@ -359,19 +366,30 @@ export class SyncOrchestratorService {
     const compressedLogs = await this.compressLogs(logs);
 
     // Upload with retry
-    const uploadResponse = await this.uploadWithRetry(compressedLogs);
+    try {
+      const uploadResponse = await this.uploadWithRetry(compressedLogs);
 
-    // Mark logs as synced
-    const logIds = unsyncedLogs.map(log => log.log_id!);
-    await this.dbManager.performanceLogRepository.markAsSynced(logIds);
+      // Mark logs as synced
+      const logIds = unsyncedLogs.map(log => log.log_id!);
+      await this.dbManager.performanceLogRepository.markAsSynced(logIds);
 
-    // Update session
-    await this.dbManager.syncSessionRepository.updateLogsUploaded(
-      sessionId,
-      uploadResponse.logsReceived,
-    );
+      // Update session
+      await this.dbManager.syncSessionRepository.updateLogsUploaded(
+        sessionId,
+        uploadResponse.logsReceived,
+      );
 
-    console.log(`Uploaded ${uploadResponse.logsReceived} logs`);
+      console.log(`Uploaded ${uploadResponse.logsReceived} logs`);
+      
+      return { 
+        shouldDownload: uploadResponse.bundleReady || false, 
+        logsUploaded: uploadResponse.logsReceived 
+      };
+    } catch (error) {
+      // If upload fails due to API not being available, don't fail the entire sync
+      console.warn('Upload failed - API may not be available:', error);
+      return { shouldDownload: false, logsUploaded: 0 };
+    }
   }
 
   /**

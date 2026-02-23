@@ -30,15 +30,12 @@ export default function LessonViewScreen() {
         setLesson(lessonData);
         
         // Track lesson start
-        await performanceService!.trackEvent({
+        await performanceService!.trackLessonStart(
           studentId,
-          timestamp: new Date(),
-          eventType: 'lesson_start',
-          contentId: lessonId,
-          subject: lessonData.subject,
-          topic: lessonData.topic,
-          data: {},
-        });
+          lessonId,
+          lessonData.subject,
+          lessonData.topic
+        );
       }
     } catch (error) {
       console.error('Error loading lesson:', error);
@@ -55,15 +52,13 @@ export default function LessonViewScreen() {
 
     try {
       // Track lesson completion
-      await performanceService.trackEvent({
+      await performanceService.trackLessonComplete(
         studentId,
-        timestamp: new Date(),
-        eventType: 'lesson_complete',
-        contentId: lessonId,
-        subject: lesson.subject,
-        topic: lesson.topic,
-        data: { timeSpent },
-      });
+        lessonId,
+        lesson.subject,
+        lesson.topic,
+        timeSpent
+      );
 
       Alert.alert(
         'Lesson Complete!',

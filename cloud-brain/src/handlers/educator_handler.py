@@ -28,11 +28,27 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Returns:
         API Gateway response
     """
+    # CORS headers for all responses
+    cors_headers = {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    }
+    
     try:
         # Parse request
         path = event.get("path", "")
         http_method = event.get("httpMethod", "")
         body = json.loads(event.get("body", "{}")) if event.get("body") else {}
+        
+        # Handle OPTIONS requests for CORS preflight
+        if http_method == "OPTIONS":
+            return {
+                "statusCode": 200,
+                "headers": cors_headers,
+                "body": json.dumps({"message": "OK"}),
+            }
         
         logger.info(f"Educator handler: {http_method} {path}")
         
@@ -69,7 +85,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             return {
                 "statusCode": 404,
                 "body": json.dumps({"error": "Endpoint not found"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
     
     except Exception as e:
@@ -77,7 +93,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -104,8 +120,25 @@ def handle_get_dashboard(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "educator_id is required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
+        
+        # If student_ids not provided, query from DynamoDB
+        if not student_ids and class_ids:
+            import boto3
+            import os
+            dynamodb = boto3.resource('dynamodb')
+            students_table = dynamodb.Table(os.environ['STUDENTS_TABLE'])
+            
+            # Scan for students in the specified classes
+            response = students_table.scan(
+                FilterExpression='classId IN (:class_ids) AND educatorId = :educator_id',
+                ExpressionAttributeValues={
+                    ':class_ids': class_ids[0],  # Simplified for single class
+                    ':educator_id': educator_id
+                }
+            )
+            student_ids = [item['studentId'] for item in response.get('Items', [])]
         
         # Generate dashboard data
         dashboard_data = dashboard_service.get_dashboard_data(educator_id, class_ids, student_ids)
@@ -113,7 +146,7 @@ def handle_get_dashboard(
         return {
             "statusCode": 200,
             "body": dashboard_data.model_dump_json(),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -121,7 +154,7 @@ def handle_get_dashboard(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -146,7 +179,7 @@ def handle_get_student_progress(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "student_id is required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Get student progress
@@ -155,7 +188,7 @@ def handle_get_student_progress(
         return {
             "statusCode": 200,
             "body": json.dumps([p.model_dump() for p in progress_list], default=str),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -163,7 +196,7 @@ def handle_get_student_progress(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -191,7 +224,7 @@ def handle_get_class_report(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "class_id is required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Generate class report
@@ -203,13 +236,13 @@ def handle_get_class_report(
             return {
                 "statusCode": 404,
                 "body": json.dumps({"error": "No data available for class"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         return {
             "statusCode": 200,
             "body": report.model_dump_json(),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -217,7 +250,7 @@ def handle_get_class_report(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -245,7 +278,7 @@ def handle_get_curriculum_coverage(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "subject is required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Generate coverage report
@@ -260,13 +293,13 @@ def handle_get_curriculum_coverage(
             return {
                 "statusCode": 404,
                 "body": json.dumps({"error": "No data available"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         return {
             "statusCode": 200,
             "body": report.model_dump_json(),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -274,7 +307,7 @@ def handle_get_curriculum_coverage(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -307,7 +340,7 @@ def handle_assign_topics(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "educator_id, student_id, subject, and topics are required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Parse due_date if provided
@@ -320,7 +353,7 @@ def handle_assign_topics(
                 return {
                     "statusCode": 400,
                     "body": json.dumps({"error": "Invalid due_date format. Use ISO format."}),
-                    "headers": {"Content-Type": "application/json"},
+                    "headers": cors_headers,
                 }
         
         # Create assignment
@@ -337,7 +370,7 @@ def handle_assign_topics(
         return {
             "statusCode": 201,
             "body": assignment.model_dump_json(),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -345,7 +378,7 @@ def handle_assign_topics(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -378,7 +411,7 @@ def handle_customize_track(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "educator_id, student_id, subject, and topics are required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Create customization
@@ -396,7 +429,7 @@ def handle_customize_track(
         return {
             "statusCode": 201,
             "body": customization.model_dump_json(),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -404,7 +437,7 @@ def handle_customize_track(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -429,7 +462,7 @@ def handle_get_assignments(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "student_id is required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Get pending assignments
@@ -438,7 +471,7 @@ def handle_get_assignments(
         return {
             "statusCode": 200,
             "body": json.dumps([a.model_dump() for a in assignments], default=str),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -446,7 +479,7 @@ def handle_get_assignments(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -475,7 +508,7 @@ def handle_get_review_queue(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "educator_id is required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Get review queue
@@ -484,7 +517,7 @@ def handle_get_review_queue(
         return {
             "statusCode": 200,
             "body": queue.model_dump_json(),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -492,7 +525,7 @@ def handle_get_review_queue(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
 
 
@@ -522,7 +555,7 @@ def handle_review_content(
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "review_id, educator_id, and approved are required"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         # Create approval object
@@ -542,7 +575,7 @@ def handle_review_content(
             return {
                 "statusCode": 500,
                 "body": json.dumps({"error": "Failed to process review"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": cors_headers,
             }
         
         return {
@@ -552,7 +585,7 @@ def handle_review_content(
                 "review_id": review_id,
                 "status": "approved" if approved else "rejected",
             }),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }
     
     except Exception as e:
@@ -560,5 +593,5 @@ def handle_review_content(
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
-            "headers": {"Content-Type": "application/json"},
+            "headers": cors_headers,
         }

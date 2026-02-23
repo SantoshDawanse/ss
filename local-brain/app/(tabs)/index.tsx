@@ -1,4 +1,4 @@
-import { ScrollView, View, Text } from 'react-native';
+import { ScrollView, View, Text, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '@/src/contexts/AppContext';
@@ -7,10 +7,80 @@ import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Loading } from '@/components/ui/loading';
 import { Ionicons } from '@expo/vector-icons';
+import { useState } from 'react';
+import { SyncOrchestratorService } from '@/src/services/SyncOrchestratorService';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { isInitialized, error } = useApp();
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const handleSync = async () => {
+    try {
+      setIsSyncing(true);
+      
+      // TODO: Replace with actual student ID and auth token from authentication
+      const studentId = 'demo_student_001';
+      const authToken = 'demo_token';
+      const publicKey = 'demo_public_key';
+      
+      const syncService = new SyncOrchestratorService(studentId, authToken, publicKey);
+      
+      // Check if sync is needed
+      const syncNeeded = await syncService.isSyncNeeded();
+      if (!syncNeeded) {
+        Alert.alert(
+          'Already Up to Date', 
+          'No new performance data to sync. Complete some lessons or quizzes to generate data for sync.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      // Start sync
+      const status = await syncService.startSync();
+      
+      if (status.state === 'complete') {
+        Alert.alert(
+          'Sync Complete', 
+          'Successfully synced with cloud-brain!',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'Sync Status', 
+          status.error || 'Sync completed with warnings',
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (err) {
+      console.error('Sync error:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to sync with cloud-brain';
+      
+      // Provide helpful error messages
+      if (errorMessage.includes('No internet connectivity')) {
+        Alert.alert(
+          'No Internet Connection', 
+          'Please check your internet connection and try again.',
+          [{ text: 'OK' }]
+        );
+      } else if (errorMessage.includes('Network request failed') || errorMessage.includes('Download info failed')) {
+        Alert.alert(
+          'API Not Available', 
+          'The cloud-brain API is not currently available. This is expected in demo mode. Your data is saved locally and will sync when the API is ready.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'Sync Error', 
+          errorMessage,
+          [{ text: 'OK' }]
+        );
+      }
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   if (error) {
     return (
@@ -58,6 +128,38 @@ export default function HomeScreen() {
                 Continue your learning journey with quality education, available anytime, anywhere.
               </Text>
             </CardContent>
+          </Card>
+
+          {/* Sync Card */}
+          <Card variant="elevated" padding="lg" style={{ marginBottom: 16, backgroundColor: '#E3F2FD' }}>
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-base font-semibold text-primary-700 mb-1">
+                  Sync with Cloud
+                </Text>
+                <Text className="text-sm text-neutral-600">
+                  Download new lessons and upload progress
+                </Text>
+              </View>
+              <Button 
+                onPress={handleSync}
+                variant="primary"
+                size="sm"
+                disabled={isSyncing}
+              >
+                {isSyncing ? (
+                  <View className="flex-row items-center">
+                    <Ionicons name="sync" size={16} color="white" />
+                    <Text className="text-white ml-2">Syncing...</Text>
+                  </View>
+                ) : (
+                  <View className="flex-row items-center">
+                    <Ionicons name="cloud-download" size={16} color="white" />
+                    <Text className="text-white ml-2">Sync Now</Text>
+                  </View>
+                )}
+              </Button>
+            </View>
           </Card>
 
           {/* Quick Actions */}

@@ -47,3 +47,6 @@ export type {
   OfflineAnalytics,
   ResourceUsage,
 } from './MonitoringService';
+
+export { StudentProfileService } from './StudentProfileService';
+export type { StudentProfile } from './StudentProfileService';

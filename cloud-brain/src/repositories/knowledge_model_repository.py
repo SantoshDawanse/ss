@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -16,12 +17,14 @@ logger = logging.getLogger(__name__)
 class KnowledgeModelRepository:
     """Repository for managing student knowledge models in DynamoDB."""
 
-    def __init__(self, table_name: str = "sikshya-sathi-students-dev"):
+    def __init__(self, table_name: str = None):
         """Initialize the repository.
         
         Args:
-            table_name: DynamoDB table name for student data
+            table_name: DynamoDB table name for student data (defaults to STUDENTS_TABLE env var)
         """
+        if table_name is None:
+            table_name = os.environ.get('STUDENTS_TABLE', 'sikshya-sathi-students-development')
         self.table_name = table_name
         try:
             dynamodb = boto3.resource("dynamodb")

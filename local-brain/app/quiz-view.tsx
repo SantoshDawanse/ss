@@ -37,15 +37,12 @@ export default function QuizViewScreen() {
         setQuiz(quizData);
         
         // Track quiz start
-        await performanceService!.trackEvent({
+        await performanceService!.trackQuizStart(
           studentId,
-          timestamp: new Date(),
-          eventType: 'quiz_start',
-          contentId: quizId,
-          subject: quizData.subject,
-          topic: quizData.topic,
-          data: {},
-        });
+          quizId,
+          quizData.subject,
+          quizData.topic
+        );
       }
     } catch (error) {
       console.error('Error loading quiz:', error);
@@ -72,19 +69,15 @@ export default function QuizViewScreen() {
       setFeedback(result);
 
       // Track answer
-      await performanceService.trackEvent({
+      await performanceService.trackQuizAnswer(
         studentId,
-        timestamp: new Date(),
-        eventType: 'quiz_answer',
-        contentId: quizId,
-        subject: quiz.subject,
-        topic: quiz.topic,
-        data: {
-          answer,
-          correct: result.correct,
-          hintsUsed,
-        },
-      });
+        quizId,
+        quiz.subject,
+        quiz.topic,
+        answer,
+        result.correct,
+        hintsUsed
+      );
 
     } catch (error) {
       console.error('Error validating answer:', error);
@@ -106,15 +99,13 @@ export default function QuizViewScreen() {
         setHintsUsed(nextLevel);
 
         // Track hint request
-        await performanceService!.trackEvent({
+        await performanceService!.trackHintRequested(
           studentId,
-          timestamp: new Date(),
-          eventType: 'hint_requested',
-          contentId: quizId,
-          subject: quiz.subject,
-          topic: quiz.topic,
-          data: { hintsUsed: nextLevel },
-        });
+          quizId,
+          quiz.subject,
+          quiz.topic,
+          nextLevel
+        );
       }
     } catch (error) {
       console.error('Error getting hint:', error);
@@ -146,15 +137,13 @@ export default function QuizViewScreen() {
     const timeSpent = Math.floor((Date.now() - startTime) / 1000);
 
     try {
-      await performanceService.trackEvent({
+      await performanceService.trackQuizComplete(
         studentId,
-        timestamp: new Date(),
-        eventType: 'quiz_complete',
-        contentId: quizId,
-        subject: quiz.subject,
-        topic: quiz.topic,
-        data: { timeSpent },
-      });
+        quizId,
+        quiz.subject,
+        quiz.topic,
+        timeSpent
+      );
 
       Alert.alert(
         'Quiz Complete!',
