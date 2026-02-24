@@ -37,6 +37,8 @@ export default function QuizzesScreen() {
   );
 
   const loadQuizzes = async () => {
+    if (!studentId) return;
+    
     try {
       setLoading(true);
       const nextQuiz = await contentService!.getNextQuiz(studentId, 'Mathematics');
@@ -52,6 +54,8 @@ export default function QuizzesScreen() {
   };
 
   const loadCompletedQuizzes = async () => {
+    if (!studentId) return;
+    
     try {
       const logs = await performanceService!.getLogsBySubject(studentId, 'Mathematics');
       const completed = new Set(

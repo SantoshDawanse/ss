@@ -24,6 +24,13 @@ export default function LessonViewScreen() {
   }, [lessonId, contentService, performanceService]);
 
   const loadLesson = async () => {
+    if (!studentId) {
+      console.warn('Cannot load lesson: studentId is null');
+      Alert.alert('Error', 'Student profile not loaded');
+      setLoading(false);
+      return;
+    }
+
     try {
       const lessonData = await contentService!.getLessonById(lessonId);
       if (lessonData) {
@@ -46,7 +53,10 @@ export default function LessonViewScreen() {
   };
 
   const handleComplete = async () => {
-    if (!lesson || !performanceService) return;
+    if (!lesson || !performanceService || !studentId) {
+      console.warn('Cannot complete lesson: missing required data');
+      return;
+    }
 
     const timeSpent = Math.floor((Date.now() - startTime) / 1000);
 

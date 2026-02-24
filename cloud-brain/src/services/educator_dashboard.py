@@ -26,6 +26,9 @@ class EducatorDashboardService:
             knowledge_repository: Repository for student knowledge models
         """
         self.knowledge_repository = knowledge_repository
+        # Import student repository for fetching student names
+        from src.repositories.student_repository import StudentRepository
+        self.student_repository = StudentRepository()
 
     def get_dashboard_data(
         self, educator_id: str, class_ids: List[str], student_ids: List[str]
@@ -91,6 +94,10 @@ class EducatorDashboardService:
             logger.warning(f"No knowledge model found for student {student_id}")
             return []
         
+        # Fetch student name from student repository
+        student = self.student_repository.get_student(student_id)
+        student_name = student.student_name if student else f"Student {student_id}"
+        
         progress_list = []
         for subject, subject_knowledge in knowledge_model.subjects.items():
             # Calculate metrics
@@ -106,7 +113,7 @@ class EducatorDashboardService:
             # Create progress object
             progress = StudentProgress(
                 student_id=student_id,
-                student_name=f"Student {student_id}",  # Placeholder - should come from student DB
+                student_name=student_name,
                 subject=subject,
                 lessons_completed=len(subject_knowledge.topics),  # Simplified
                 quizzes_completed=sum(t.attempts for t in subject_knowledge.topics.values()),

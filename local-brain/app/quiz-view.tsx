@@ -25,12 +25,14 @@ export default function QuizViewScreen() {
   const [startTime] = useState(Date.now());
 
   useEffect(() => {
-    if (quizId && contentService && performanceService) {
+    if (quizId && contentService && performanceService && studentId) {
       loadQuiz();
     }
-  }, [quizId, contentService, performanceService]);
+  }, [quizId, contentService, performanceService, studentId]);
 
   const loadQuiz = async () => {
+    if (!studentId) return;
+    
     try {
       const quizData = await contentService!.getQuizById(quizId);
       if (quizData) {
@@ -53,7 +55,7 @@ export default function QuizViewScreen() {
   };
 
   const handleAnswerSubmit = async (questionId: string, answer: string) => {
-    if (!quiz || !contentService || !performanceService) return;
+    if (!quiz || !contentService || !performanceService || !studentId) return;
 
     const currentQuestion = quiz.questions[currentQuestionIndex];
     
@@ -86,7 +88,7 @@ export default function QuizViewScreen() {
   };
 
   const handleRequestHint = async () => {
-    if (!quiz || !contentService) return;
+    if (!quiz || !contentService || !studentId) return;
 
     const currentQuestion = quiz.questions[currentQuestionIndex];
     const nextLevel = hintsUsed + 1;
@@ -132,7 +134,7 @@ export default function QuizViewScreen() {
   };
 
   const handleQuizComplete = async () => {
-    if (!quiz || !performanceService) return;
+    if (!quiz || !performanceService || !studentId) return;
 
     const timeSpent = Math.floor((Date.now() - startTime) / 1000);
 

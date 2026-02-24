@@ -65,6 +65,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Route to appropriate handler
         if path == "/educator/dashboard" and http_method == "GET":
             return handle_get_dashboard(event, dashboard_service)
+        elif path == "/educator/students" and http_method == "GET":
+            return handle_get_students(event)
         elif path == "/educator/student-progress" and http_method == "GET":
             return handle_get_student_progress(event, dashboard_service)
         elif path == "/educator/class-report" and http_method == "GET":
@@ -151,6 +153,68 @@ def handle_get_dashboard(
     
     except Exception as e:
         logger.error(f"Error getting dashboard: {e}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+            "headers": cors_headers,
+        }
+
+
+def handle_get_students(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle GET /educator/students request.
+    
+    Args:
+        event: Lambda event
+        
+    Returns:
+        API Gateway response with list of registered students
+    """
+    cors_headers = {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    }
+    
+    try:
+        # Extract query parameters
+        params = event.get("queryStringParameters", {}) or {}
+        limit = int(params.get("limit", 100))
+        
+        # Validate limit
+        if limit < 1 or limit > 1000:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "limit must be between 1 and 1000"}),
+                "headers": cors_headers,
+            }
+        
+        # Get students from repository
+        from src.repositories.student_repository import StudentRepository
+        student_repository = StudentRepository()
+        students = student_repository.list_students(limit=limit)
+        
+        # Convert to response format
+        students_data = [
+            {
+                "studentId": student.student_id,
+                "studentName": student.student_name,
+                "registrationTimestamp": student.registration_timestamp.isoformat(),
+            }
+            for student in students
+        ]
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "students": students_data,
+                "count": len(students_data),
+            }),
+            "headers": cors_headers,
+        }
+    
+    except Exception as e:
+        logger.error(f"Error getting students: {e}", exc_info=True)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),

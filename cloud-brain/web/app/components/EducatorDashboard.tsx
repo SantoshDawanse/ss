@@ -42,13 +42,41 @@ import type {
 
 export const EducatorDashboard: React.FC = () => {
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
+  const [students, setStudents] = useState<Array<{studentId: string; studentName: string; registrationTimestamp: string}>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
+    fetchStudents();
     fetchDashboardData();
   }, []);
+
+  const fetchStudents = async () => {
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://zm3d9kk179.execute-api.us-east-1.amazonaws.com/development';
+      
+      const response = await fetch(
+        `${apiUrl}/educator/students?limit=100`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch students: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      setStudents(data.students || []);
+    } catch (err) {
+      console.error('Error fetching students:', err);
+      // Don't set error state here, let dashboard data fetch handle it
+    }
+  };
 
   const fetchDashboardData = async () => {
     try {
@@ -151,16 +179,43 @@ export const EducatorDashboard: React.FC = () => {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Info className="h-5 w-5" />
-              No Student Data Available
+              {students.length > 0 ? 'Registered Students' : 'No Student Data Available'}
             </CardTitle>
             <CardDescription>
-              The API is working but no student performance data is available yet.
+              {students.length > 0 
+                ? `${students.length} student${students.length > 1 ? 's' : ''} registered, but no performance data available yet.`
+                : 'The API is working but no student performance data is available yet.'}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {students.length > 0 && (
+              <>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Student Name</TableHead>
+                      <TableHead>Student ID</TableHead>
+                      <TableHead>Registration Date</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {students.map((student) => (
+                      <TableRow key={student.studentId}>
+                        <TableCell className="font-medium">{student.studentName}</TableCell>
+                        <TableCell className="text-muted-foreground">{student.studentId}</TableCell>
+                        <TableCell>{new Date(student.registrationTimestamp).toLocaleDateString()}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                
+                <Separator />
+              </>
+            )}
+            
             <Alert>
               <AlertDescription>
-                <p className="font-medium mb-2">To see data in the dashboard:</p>
+                <p className="font-medium mb-2">To see performance data in the dashboard:</p>
                 <ol className="list-decimal list-inside space-y-1 text-sm">
                   <li>Students need to use the local-brain mobile app</li>
                   <li>Complete lessons and quizzes to generate performance data</li>
@@ -175,7 +230,7 @@ export const EducatorDashboard: React.FC = () => {
             <div className="space-y-2">
               <p className="text-sm font-medium">Quick Start Options:</p>
               <div className="flex gap-2">
-                <Button onClick={fetchDashboardData} variant="default">
+                <Button onClick={() => { fetchStudents(); fetchDashboardData(); }} variant="default">
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Refresh Dashboard
                 </Button>
@@ -207,7 +262,7 @@ export const EducatorDashboard: React.FC = () => {
           <p className="text-muted-foreground mt-1">Monitor student progress and class performance</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="icon" onClick={fetchDashboardData}>
+          <Button variant="outline" size="icon" onClick={() => { fetchStudents(); fetchDashboardData(); }}>
             <RefreshCw className="h-4 w-4" />
           </Button>
           <Button variant="outline" size="icon">

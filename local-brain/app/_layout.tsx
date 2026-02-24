@@ -6,6 +6,7 @@ import '../global.css';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AppProvider } from '@/src/contexts/AppContext';
+import { AppNavigationWrapper } from '@/src/components/AppNavigationWrapper';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -16,41 +17,50 @@ export default function RootLayout() {
 
   return (
     <AppProvider>
-      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <Stack>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen 
-            name="lesson-view" 
-            options={{ 
-              title: 'Lesson',
-              headerShown: true,
-              headerStyle: {
-                backgroundColor: '#FFFFFF',
-              },
-              headerTintColor: '#2196F3',
-              headerTitleStyle: {
-                fontWeight: 'bold',
-              },
-            }} 
-          />
-          <Stack.Screen 
-            name="quiz-view" 
-            options={{ 
-              title: 'Quiz',
-              headerShown: true,
-              headerStyle: {
-                backgroundColor: '#FFFFFF',
-              },
-              headerTintColor: '#2196F3',
-              headerTitleStyle: {
-                fontWeight: 'bold',
-              },
-            }} 
-          />
-          <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-        </Stack>
-        <StatusBar style="auto" />
-      </ThemeProvider>
+      <AppNavigationWrapper>
+        <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+          <Stack>
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen 
+              name="onboarding" 
+              options={{ 
+                headerShown: false,
+                gestureEnabled: false,
+              }} 
+            />
+            <Stack.Screen 
+              name="lesson-view" 
+              options={{ 
+                title: 'Lesson',
+                headerShown: true,
+                headerStyle: {
+                  backgroundColor: '#FFFFFF',
+                },
+                headerTintColor: '#2196F3',
+                headerTitleStyle: {
+                  fontWeight: 'bold',
+                },
+              }} 
+            />
+            <Stack.Screen 
+              name="quiz-view" 
+              options={{ 
+                title: 'Quiz',
+                headerShown: true,
+                headerStyle: {
+                  backgroundColor: '#FFFFFF',
+                },
+                headerTintColor: '#2196F3',
+                headerTitleStyle: {
+                  fontWeight: 'bold',
+                },
+              }} 
+            />
+            <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+          </Stack>
+          <StatusBar style="auto" />
+        </ThemeProvider>
+      </AppNavigationWrapper>
     </AppProvider>
   );
 }

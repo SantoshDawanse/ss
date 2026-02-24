@@ -37,6 +37,12 @@ export default function LessonsScreen() {
   );
 
   const loadLessons = async () => {
+    if (!studentId) {
+      console.warn('Cannot load lessons: studentId is null');
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       const nextLesson = await contentService!.getNextLesson(studentId, 'Mathematics');
@@ -52,6 +58,11 @@ export default function LessonsScreen() {
   };
 
   const loadCompletedLessons = async () => {
+    if (!studentId) {
+      console.warn('Cannot load completed lessons: studentId is null');
+      return;
+    }
+
     try {
       const logs = await performanceService!.getLogsBySubject(studentId, 'Mathematics');
       const completed = new Set(

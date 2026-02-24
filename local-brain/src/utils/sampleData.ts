@@ -4,8 +4,6 @@
 
 import { Lesson, Quiz, Hint, LearningBundle } from '../models';
 
-export const SAMPLE_STUDENT_ID = 'student-001';
-
 export const sampleLessons: Lesson[] = [
   {
     lessonId: 'lesson-math-001',
@@ -113,7 +111,7 @@ export const sampleHints: Record<string, Hint[]> = {
 
 export const sampleBundle: LearningBundle = {
   bundleId: 'bundle-001',
-  studentId: SAMPLE_STUDENT_ID,
+  studentId: '', // Will be set dynamically when initializing database
   validFrom: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
   validUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
   subjects: [

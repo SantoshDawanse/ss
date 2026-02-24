@@ -95,9 +95,8 @@ describe('StudentProfileService', () => {
       (SecureStore.getItemAsync as jest.Mock).mockResolvedValue('invalid-json');
       (SecureStore.deleteItemAsync as jest.Mock).mockResolvedValue(undefined);
 
-      const result = await service.loadProfile();
-      
-      expect(result).toBeNull();
+      // Should throw error about corrupted profile
+      await expect(service.loadProfile()).rejects.toThrow('Profile data was corrupted');
       expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('sikshya_sathi_student_profile');
     });
 
@@ -108,9 +107,8 @@ describe('StudentProfileService', () => {
       );
       (SecureStore.deleteItemAsync as jest.Mock).mockResolvedValue(undefined);
 
-      const result = await service.loadProfile();
-      
-      expect(result).toBeNull();
+      // Should throw error about corrupted profile
+      await expect(service.loadProfile()).rejects.toThrow('Profile data was corrupted');
       expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('sikshya_sathi_student_profile');
     });
   });
@@ -149,7 +147,8 @@ describe('StudentProfileService', () => {
     it('should handle SecureStore errors', async () => {
       (SecureStore.setItemAsync as jest.Mock).mockRejectedValue(new Error('Storage error'));
 
-      await expect(service.createProfile('Test Student')).rejects.toThrow('Profile creation failed');
+      // Should throw user-friendly error message
+      await expect(service.createProfile('Test Student')).rejects.toThrow('Unable to save profile to secure storage');
     });
   });
 

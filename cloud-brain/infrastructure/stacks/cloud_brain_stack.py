@@ -50,6 +50,7 @@ class CloudBrainStack(Stack):
         self.sync_upload_handler = self._create_sync_upload_handler()
         self.sync_download_handler = self._create_sync_download_handler()
         self.educator_handler = self._create_educator_handler()
+        self.student_handler = self._create_student_handler()
 
         # API Gateway
         self.api = self._create_api_gateway()
@@ -433,6 +434,53 @@ class CloudBrainStack(Stack):
 
         return handler
 
+    def _create_student_handler(self) -> lambda_.Function:
+        """Create Lambda function for student registration."""
+        handler = lambda_.Function(
+            self,
+            "StudentHandler",
+            function_name=f"sikshya-sathi-student-{self.env_name}",
+            runtime=lambda_.Runtime.PYTHON_3_11,
+            handler="src.handlers.student_handler.register",
+            code=lambda_.Code.from_asset(
+                "..",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_11.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install --platform manylinux2014_x86_64 --only-binary=:all: -r src/requirements.txt -t /asset-output && "
+                        "cp -r src /asset-output/",
+                    ],
+                    output_type=BundlingOutput.AUTO_DISCOVER,
+                ),
+            ),
+            timeout=Duration.seconds(10),
+            memory_size=256,
+            architecture=lambda_.Architecture.X86_64,
+            environment={
+                "ENVIRONMENT": self.env_name,
+                "STUDENTS_TABLE": self.students_table.table_name,
+                "POWERTOOLS_SERVICE_NAME": "student-registration",
+                "POWERTOOLS_METRICS_NAMESPACE": "SikshyaSathi/CloudBrain",
+                "LOG_LEVEL": "INFO" if self.env_name == "production" else "DEBUG",
+            },
+        )
+
+        # Grant permissions
+        self.students_table.grant_read_write_data(handler)
+        
+        # Grant CloudWatch metrics permissions
+        handler.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+            )
+        )
+
+        return handler
+
     def _create_api_gateway(self) -> apigw.RestApi:
         """Create API Gateway for sync endpoints."""
         api = apigw.RestApi(
@@ -501,12 +549,45 @@ class CloudBrainStack(Stack):
             method_responses=[apigw.MethodResponse(status_code="200")],
         )
 
+        # /api resource
+        api_resource = api.root.add_resource("api")
+        
+        # /api/students resource
+        students = api_resource.add_resource("students")
+        
+        # POST /api/students/register
+        register = students.add_resource("register")
+        register.add_method(
+            "POST",
+            apigw.LambdaIntegration(
+                self.student_handler,
+                proxy=True,
+            ),
+            request_validator=apigw.RequestValidator(
+                self,
+                "StudentRegistrationValidator",
+                rest_api=api,
+                validate_request_body=True,
+                validate_request_parameters=False,
+            ),
+        )
+
         # /educator resource
         educator = api.root.add_resource("educator")
         
         # GET /educator/dashboard
         dashboard = educator.add_resource("dashboard")
         dashboard.add_method(
+            "GET",
+            apigw.LambdaIntegration(
+                self.educator_handler,
+                proxy=True,
+            ),
+        )
+        
+        # GET /educator/students
+        students = educator.add_resource("students")
+        students.add_method(
             "GET",
             apigw.LambdaIntegration(
                 self.educator_handler,
@@ -723,6 +804,93 @@ class CloudBrainStack(Stack):
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
         )
         sync_download_error_alarm.add_alarm_action(
+            cw_actions.SnsAction(self.alarm_topic)
+        )
+        
+        # Alarm for DynamoDB students table throttling
+        students_table_throttle_alarm = cloudwatch.Alarm(
+            self,
+            "StudentsTableThrottleAlarm",
+            alarm_name=f"sikshya-sathi-students-table-throttle-{self.env_name}",
+            alarm_description="Students table experiencing throttling",
+            metric=cloudwatch.Metric(
+                namespace="AWS/DynamoDB",
+                metric_name="UserErrors",
+                dimensions_map={
+                    "TableName": self.students_table.table_name,
+                },
+                statistic="Sum",
+                period=Duration.minutes(5),
+            ),
+            threshold=10,
+            evaluation_periods=2,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        students_table_throttle_alarm.add_alarm_action(
+            cw_actions.SnsAction(self.alarm_topic)
+        )
+        
+        # Alarm for DynamoDB students table system errors
+        students_table_system_error_alarm = cloudwatch.Alarm(
+            self,
+            "StudentsTableSystemErrorAlarm",
+            alarm_name=f"sikshya-sathi-students-table-system-errors-{self.env_name}",
+            alarm_description="Students table experiencing system errors",
+            metric=cloudwatch.Metric(
+                namespace="AWS/DynamoDB",
+                metric_name="SystemErrors",
+                dimensions_map={
+                    "TableName": self.students_table.table_name,
+                },
+                statistic="Sum",
+                period=Duration.minutes(5),
+            ),
+            threshold=5,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        students_table_system_error_alarm.add_alarm_action(
+            cw_actions.SnsAction(self.alarm_topic)
+        )
+        
+        # Alarm for student registration errors
+        student_registration_error_alarm = cloudwatch.Alarm(
+            self,
+            "StudentRegistrationErrorAlarm",
+            alarm_name=f"sikshya-sathi-student-registration-errors-{self.env_name}",
+            alarm_description="Student registration Lambda errors",
+            metric=self.student_handler.metric_errors(
+                period=Duration.minutes(5),
+            ),
+            threshold=5,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        student_registration_error_alarm.add_alarm_action(
+            cw_actions.SnsAction(self.alarm_topic)
+        )
+        
+        # Alarm for student registration latency (p95 > 1000ms)
+        student_registration_latency_alarm = cloudwatch.Alarm(
+            self,
+            "StudentRegistrationLatencyAlarm",
+            alarm_name=f"sikshya-sathi-student-registration-latency-{self.env_name}",
+            alarm_description="Student registration latency exceeds 1000ms (p95)",
+            metric=cloudwatch.Metric(
+                namespace=namespace,
+                metric_name="StudentRegistrationLatency",
+                statistic="p95",
+                period=Duration.minutes(5),
+            ),
+            threshold=1000,  # 1 second in milliseconds
+            evaluation_periods=2,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        student_registration_latency_alarm.add_alarm_action(
             cw_actions.SnsAction(self.alarm_topic)
         )
 

@@ -12,15 +12,24 @@ import { SyncOrchestratorService } from '@/src/services/SyncOrchestratorService'
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { isInitialized, error } = useApp();
+  const { isInitialized, error, studentId } = useApp();
   const [isSyncing, setIsSyncing] = useState(false);
 
   const handleSync = async () => {
     try {
       setIsSyncing(true);
       
-      // TODO: Replace with actual student ID and auth token from authentication
-      const studentId = 'demo_student_001';
+      // Use studentId from AppContext
+      if (!studentId) {
+        Alert.alert(
+          'Profile Not Loaded',
+          'Student profile is not available. Please restart the app.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      // TODO: Replace with actual auth token from authentication
       const authToken = 'demo_token';
       const publicKey = 'demo_public_key';
       

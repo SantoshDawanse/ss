@@ -4,24 +4,35 @@
  */
 
 import { DatabaseManager } from '../database/DatabaseManager';
-import { sampleBundle, SAMPLE_STUDENT_ID } from './sampleData';
+import { sampleBundle } from './sampleData';
 
-export async function initializeDatabase(dbManager: DatabaseManager): Promise<void> {
+export async function initializeDatabase(dbManager: DatabaseManager, studentId: string): Promise<void> {
   try {
     console.log('Initializing database with sample data...');
 
-    // Check if data already exists
-    const existingBundle = await dbManager.learningBundleRepository.getActiveBundle(
-      SAMPLE_STUDENT_ID
+    // Check if bundle already exists by bundle_id (to avoid UNIQUE constraint violation)
+    const existingBundleById = await dbManager.learningBundleRepository.findById(
+      sampleBundle.bundleId
     );
 
-    if (existingBundle) {
-      console.log('Sample data already exists, skipping initialization');
+    if (existingBundleById) {
+      console.log('Sample bundle already exists in database, skipping initialization');
       return;
     }
 
-    // Insert learning bundle
-    await dbManager.learningBundleRepository.insert(sampleBundle);
+    // Also check if student already has an active bundle
+    const existingBundle = await dbManager.learningBundleRepository.getActiveBundle(
+      studentId
+    );
+
+    if (existingBundle) {
+      console.log('Student already has an active bundle, skipping initialization');
+      return;
+    }
+
+    // Insert learning bundle with dynamic studentId
+    const bundleWithStudentId = { ...sampleBundle, studentId };
+    await dbManager.learningBundleRepository.insert(bundleWithStudentId);
     console.log('Inserted learning bundle');
 
     // Insert lessons
@@ -57,7 +68,7 @@ export async function initializeDatabase(dbManager: DatabaseManager): Promise<vo
 
     // Initialize student state
     await dbManager.studentStateRepository.upsert({
-      studentId: SAMPLE_STUDENT_ID,
+      studentId,
       currentSubject: 'Mathematics',
       currentLessonId: undefined,
       lastActive: new Date(),

@@ -8,6 +8,11 @@ from .curriculum import (
     Subject,
     TopicDetails,
 )
+from .student import (
+    Student,
+    StudentRegistrationRequest,
+    StudentRegistrationResponse,
+)
 from .validation import (
     ContentValidationRequest,
     ValidationAuditLog,
@@ -25,6 +30,10 @@ __all__ = [
     "LearningProgression",
     "Subject",
     "TopicDetails",
+    # Student models
+    "Student",
+    "StudentRegistrationRequest",
+    "StudentRegistrationResponse",
     # Validation models
     "ContentValidationRequest",
     "ValidationAuditLog",
