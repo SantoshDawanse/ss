@@ -541,78 +541,95 @@ class BedrockAgentService:
         Returns:
             Dict with mock lessons and quizzes
         """
-        from datetime import datetime
+        import uuid
         
         logger.info(f"Generating mock content for student {student_id}")
         
-        # Mock lesson
+        # Mock lesson with correct structure
         mock_lesson = {
-            "lesson_id": f"mock-lesson-{student_id}-1",
+            "lesson_id": f"lesson_{uuid.uuid4()}",
+            "subject": subject,
+            "topic": "Introduction",
             "title": f"Introduction to {subject}",
-            "subject": subject,
-            "topic": "Introduction",
-            "grade": 8,
             "difficulty": "medium",
-            "learning_objectives": [
-                f"Understand basic concepts of {subject}",
-                "Apply fundamental principles",
-                "Solve simple problems"
-            ],
-            "content": f"Welcome to {subject}! This lesson introduces you to the fundamental concepts.",
-            "examples": [
+            "estimated_minutes": 30,
+            "curriculum_standards": ["STANDARD_001"],
+            "sections": [
                 {
-                    "title": "Example 1",
-                    "problem": "Sample problem",
-                    "solution": "Sample solution",
-                    "explanation": "This demonstrates the concept"
-                }
-            ],
-            "practice_problems": [
-                {
-                    "problem": "Practice problem 1",
-                    "hint": "Think about the basic principles",
-                    "answer": "Sample answer"
-                }
-            ],
-            "estimated_duration": 30,
-            "created_at": datetime.utcnow().isoformat()
-        }
-        
-        # Mock quiz
-        mock_quiz = {
-            "quiz_id": f"mock-quiz-{student_id}-1",
-            "title": f"{subject} Practice Quiz",
-            "subject": subject,
-            "topic": "Introduction",
-            "grade": 8,
-            "difficulty": "medium",
-            "questions": [
-                {
-                    "question_id": "q1",
-                    "question_text": f"What is a fundamental concept in {subject}?",
-                    "question_type": "multiple_choice",
-                    "options": ["Option A", "Option B", "Option C", "Option D"],
-                    "correct_answer": "Option A",
-                    "explanation": "This is the correct answer because...",
-                    "points": 10,
-                    "cognitive_level": 2
+                    "type": "explanation",
+                    "content": f"Welcome to {subject}! This lesson introduces you to the fundamental concepts. "
+                              f"We'll explore the basic principles and how they apply to real-world situations.",
+                    "media": []
                 },
                 {
-                    "question_id": "q2",
-                    "question_text": "Solve this problem:",
-                    "question_type": "multiple_choice",
-                    "options": ["Answer 1", "Answer 2", "Answer 3", "Answer 4"],
-                    "correct_answer": "Answer 1",
-                    "explanation": "The solution is...",
-                    "points": 10,
-                    "cognitive_level": 3
+                    "type": "example",
+                    "content": "Let's look at a practical example to understand this concept better. "
+                              "Consider a simple problem that demonstrates the fundamental principle.",
+                    "media": []
+                },
+                {
+                    "type": "practice",
+                    "content": "Now it's your turn! Try solving these practice problems to reinforce your understanding. "
+                              "Remember to apply the concepts we just learned.",
+                    "media": []
                 }
-            ],
-            "total_points": 20,
-            "passing_score": 14,
-            "time_limit": 15,
-            "created_at": datetime.utcnow().isoformat()
+            ]
         }
+        
+        # Mock quiz with correct structure
+        mock_quiz = {
+            "quiz_id": f"quiz_{uuid.uuid4()}",
+            "subject": subject,
+            "topic": "Introduction",
+            "title": f"{subject} Practice Quiz",
+            "difficulty": "medium",
+            "time_limit": 15,
+            "questions": [
+                {
+                    "question_id": f"q_{uuid.uuid4()}",
+                    "type": "multiple_choice",
+                    "question": f"What is a fundamental concept in {subject}?",
+                    "options": [
+                        "Understanding basic principles",
+                        "Memorizing formulas",
+                        "Skipping steps",
+                        "Guessing answers"
+                    ],
+                    "correct_answer": "Understanding basic principles",
+                    "explanation": "Understanding basic principles is fundamental because it allows you to apply concepts to new situations.",
+                    "curriculum_standard": "STANDARD_001",
+                    "bloom_level": 2
+                },
+                {
+                    "question_id": f"q_{uuid.uuid4()}",
+                    "type": "multiple_choice",
+                    "question": "Which approach is best for solving problems?",
+                    "options": [
+                        "Apply learned concepts systematically",
+                        "Random trial and error",
+                        "Skip difficult parts",
+                        "Copy from others"
+                    ],
+                    "correct_answer": "Apply learned concepts systematically",
+                    "explanation": "Applying concepts systematically ensures you understand the process and can solve similar problems independently.",
+                    "curriculum_standard": "STANDARD_001",
+                    "bloom_level": 3
+                },
+                {
+                    "question_id": f"q_{uuid.uuid4()}",
+                    "type": "true_false",
+                    "question": f"Practice is important for mastering {subject}.",
+                    "options": ["True", "False"],
+                    "correct_answer": "True",
+                    "explanation": "Regular practice helps reinforce concepts and build problem-solving skills.",
+                    "curriculum_standard": "STANDARD_001",
+                    "bloom_level": 1
+                }
+            ]
+        }
+        
+        logger.info(f"Generated mock content: 1 lesson with {len(mock_lesson['sections'])} sections, "
+                   f"1 quiz with {len(mock_quiz['questions'])} questions")
         
         return {
             "lessons": [mock_lesson],
