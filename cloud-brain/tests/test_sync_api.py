@@ -79,9 +79,9 @@ class TestSyncUploadHandler:
         # Verify
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
-        assert body["session_id"] == "session123"
-        assert body["logs_received"] == 1
-        assert body["bundle_ready"] is True
+        assert body["sessionId"] == "session123"  # camelCase
+        assert body["logsReceived"] == 1  # camelCase
+        assert body["bundleReady"] is True  # camelCase
 
         # Verify repository calls
         mock_sync_repo.create_session.assert_called_once_with(student_id)
@@ -91,7 +91,7 @@ class TestSyncUploadHandler:
     @patch("handlers.sync_handler.authenticate_request")
     def test_upload_authentication_failure(self, mock_auth):
         """Test upload with authentication failure."""
-        from utils.auth import AuthError
+        from src.utils.auth import AuthError
 
         mock_auth.side_effect = AuthError("Invalid token")
 
@@ -106,7 +106,7 @@ class TestSyncUploadHandler:
 
         assert response["statusCode"] == 401
         body = json.loads(response["body"])
-        assert "error" in body
+        assert "errorCode" in body or "error" in body
 
     def test_decompress_logs_plain_list(self):
         """Test decompressing logs that are already a list."""
@@ -139,14 +139,122 @@ class TestSyncUploadHandler:
         with pytest.raises(ValueError, match="Invalid log at index 0"):
             _validate_logs(logs)
 
+    @patch("handlers.sync_handler.authenticate_request")
+    @patch("handlers.sync_handler.SyncSessionRepository")
+    @patch("handlers.sync_handler.KnowledgeModelRepository")
+    @patch("handlers.sync_handler.PersonalizationEngine")
+    def test_upload_with_camelcase_fields(
+        self,
+        mock_personalization,
+        mock_knowledge_repo_class,
+        mock_sync_repo_class,
+        mock_auth,
+    ):
+        """Test upload with camelCase field names (from mobile client)."""
+        # Setup mocks
+        student_id = "student123"
+        mock_auth.return_value = student_id
+
+        mock_sync_repo = Mock()
+        mock_sync_repo_class.return_value = mock_sync_repo
+
+        session = SyncSession(
+            session_id="session123",
+            student_id=student_id,
+            start_time=datetime.utcnow(),
+            status=SyncStatus.PENDING,
+        )
+        mock_sync_repo.create_session.return_value = session
+        mock_sync_repo.get_latest_session_for_student.return_value = None
+
+        # Create event with camelCase fields (as sent by mobile client)
+        import base64
+        logs = [
+            {
+                "student_id": student_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "event_type": "quiz_answer",
+                "content_id": "quiz1",
+                "subject": "Mathematics",
+                "topic": "Algebra",
+                "data": {"correct": True, "time_spent": 30},
+            }
+        ]
+        # Simulate encrypted logs as base64 string
+        logs_json = json.dumps(logs)
+        encrypted_logs = base64.b64encode(logs_json.encode()).decode()
+
+        event = {
+            "headers": {"Authorization": "Bearer fake-token"},
+            "body": json.dumps(
+                {
+                    "studentId": student_id,  # camelCase
+                    "logs": encrypted_logs,  # base64 string
+                    "lastSyncTime": None,  # camelCase
+                }
+            ),
+        }
+
+        context = Mock()
+
+        # Execute
+        response = upload(event, context)
+
+        # Verify
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["sessionId"] == "session123"  # camelCase
+        assert body["logsReceived"] == 1  # camelCase
+        assert body["bundleReady"] is True  # camelCase
+
+    def test_decompress_logs_base64_string(self):
+        """Test decompressing logs that are base64-encoded JSON string."""
+        import base64
+        
+        logs = [{"event": "test", "data": "value"}]
+        logs_json = json.dumps(logs)
+        encoded = base64.b64encode(logs_json.encode()).decode()
+        
+        result = _decompress_logs(encoded)
+        assert result == logs
+
+    def test_decompress_logs_empty_string(self):
+        """Test decompressing empty string returns empty list."""
+        result = _decompress_logs("")
+        assert result == []
+
+    def test_decompress_logs_encrypted_format(self):
+        """Test decompressing logs in encrypted format from mobile client."""
+        import base64
+        
+        # Simulate the encryption format from EncryptionService.encryptLogsForSync
+        logs = [{"event": "test", "data": "value"}]
+        logs_json = json.dumps(logs)
+        
+        # Create encrypted format: {ciphertext: base64(iv:data), iv: "..."}
+        iv = "1234567890abcdef"
+        inner_data = f"{iv}:{logs_json}"
+        inner_encoded = base64.b64encode(inner_data.encode()).decode()
+        
+        encrypted_obj = {
+            "ciphertext": inner_encoded,
+            "iv": iv
+        }
+        
+        # Double encode as done in encryptLogsForSync
+        outer_encoded = base64.b64encode(json.dumps(encrypted_obj).encode()).decode()
+        
+        result = _decompress_logs(outer_encoded)
+        assert result == logs
+
 
 class TestSyncDownloadHandler:
     """Tests for sync download handler."""
 
     @patch("handlers.sync_handler.authenticate_request")
     @patch("handlers.sync_handler.SyncSessionRepository")
-    @patch("handlers.sync_handler.BundleGenerator")
-    @patch("handlers.sync_handler.KnowledgeModelRepository")
+    @patch("src.services.bundle_generator.BundleGenerator")
+    @patch("src.repositories.knowledge_model_repository.KnowledgeModelRepository")
     def test_download_success_with_existing_bundle(
         self,
         mock_knowledge_repo_class,
@@ -163,7 +271,7 @@ class TestSyncDownloadHandler:
         mock_sync_repo = Mock()
         mock_sync_repo_class.return_value = mock_sync_repo
 
-        from models.sync import SyncDownloadData
+        from src.models.sync import SyncDownloadData
 
         session = SyncSession(
             session_id=session_id,
@@ -192,8 +300,8 @@ class TestSyncDownloadHandler:
         # Verify
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
-        assert body["bundle_url"] == "https://s3.amazonaws.com/bundle"
-        assert body["bundle_size"] == 1024
+        assert body["bundleUrl"] == "https://s3.amazonaws.com/bundle"  # camelCase
+        assert body["bundleSize"] == 1024  # camelCase
         assert body["checksum"] == "abc123"
 
         # Verify session was marked complete
@@ -223,7 +331,7 @@ class TestSyncDownloadHandler:
 
         assert response["statusCode"] == 404
         body = json.loads(response["body"])
-        assert "error" in body
+        assert "errorCode" in body or "error" in body
 
     @patch("handlers.sync_handler.authenticate_request")
     @patch("handlers.sync_handler.SyncSessionRepository")
@@ -254,7 +362,7 @@ class TestSyncDownloadHandler:
 
         assert response["statusCode"] == 403
         body = json.loads(response["body"])
-        assert "error" in body
+        assert "errorCode" in body or "error" in body
 
 
 class TestAuthUtils:

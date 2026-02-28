@@ -9,6 +9,8 @@ import { Loading } from '@/components/ui/loading';
 import { Ionicons } from '@expo/vector-icons';
 import { useState } from 'react';
 import { SyncOrchestratorService } from '@/src/services/SyncOrchestratorService';
+import * as SecureStore from 'expo-secure-store';
+
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -29,30 +31,28 @@ export default function HomeScreen() {
         return;
       }
       
-      // TODO: Replace with actual auth token from authentication
-      const authToken = 'demo_token';
-      const publicKey = 'demo_public_key';
-      
-      const syncService = new SyncOrchestratorService(studentId, authToken, publicKey);
-      
-      // Check if sync is needed
-      const syncNeeded = await syncService.isSyncNeeded();
-      if (!syncNeeded) {
+      // Get auth token from secure storage
+      const authToken = await SecureStore.getItemAsync('authToken');
+      if (!authToken) {
         Alert.alert(
-          'Already Up to Date', 
-          'No new performance data to sync. Complete some lessons or quizzes to generate data for sync.',
+          'Authentication Required',
+          'Please restart the app to authenticate.',
           [{ text: 'OK' }]
         );
         return;
       }
       
-      // Start sync
+      const publicKey = 'demo_public_key';
+      
+      const syncService = new SyncOrchestratorService(studentId, authToken, publicKey);
+      
+      // Start sync (will work for both first-time and returning users)
       const status = await syncService.startSync();
       
       if (status.state === 'complete') {
         Alert.alert(
           'Sync Complete', 
-          'Successfully synced with cloud-brain!',
+          'Successfully synced with cloud-brain! Check Lessons and Quizzes tabs for new content.',
           [{ text: 'OK' }]
         );
       } else {
@@ -76,7 +76,7 @@ export default function HomeScreen() {
       } else if (errorMessage.includes('Network request failed') || errorMessage.includes('Download info failed')) {
         Alert.alert(
           'API Not Available', 
-          'The cloud-brain API is not currently available. This is expected in demo mode. Your data is saved locally and will sync when the API is ready.',
+          'The cloud-brain API is not currently available. Please ensure the cloud-brain service is deployed and the API URL is correct in your .env file.',
           [{ text: 'OK' }]
         );
       } else {

@@ -128,6 +128,25 @@ export class PerformanceLogRepository extends BaseRepository<PerformanceLogRow> 
   }
 
   /**
+   * Find all logs for a student.
+   */
+  public async findByStudent(studentId: string): Promise<PerformanceLogRow[]> {
+    try {
+      const result = await this.query(
+        `SELECT * FROM ${this.tableName} 
+        WHERE student_id = ? 
+        ORDER BY timestamp DESC`,
+        [studentId],
+      );
+
+      return this.resultSetToArray(result);
+    } catch (error) {
+      console.error('Error finding logs by student:', error);
+      throw new Error(`Failed to find logs: ${error}`);
+    }
+  }
+
+  /**
    * Mark logs as synced.
    */
   public async markAsSynced(logIds: number[]): Promise<void> {

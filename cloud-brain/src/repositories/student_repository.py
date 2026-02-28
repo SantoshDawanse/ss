@@ -117,7 +117,11 @@ class StudentRepository:
             ClientError: If DynamoDB operation fails
         """
         try:
-            response = self.table.scan(Limit=limit)
+            # Only scan for items that have studentName attribute (actual student records)
+            response = self.table.scan(
+                Limit=limit,
+                FilterExpression="attribute_exists(studentName)"
+            )
             items = response.get("Items", [])
 
             students = [self._item_to_student(item) for item in items]
@@ -170,10 +174,18 @@ class StudentRepository:
         Returns:
             Student object
         """
+        # Handle registrationTimestamp - use current time if not present
+        reg_timestamp = item.get("registrationTimestamp")
+        if reg_timestamp:
+            registration_timestamp = datetime.fromisoformat(reg_timestamp)
+        else:
+            # Fallback for old records without registrationTimestamp
+            registration_timestamp = datetime.utcnow()
+        
         return Student(
             student_id=item["studentId"],
             student_name=item["studentName"],
-            registration_timestamp=datetime.fromisoformat(item["registrationTimestamp"]),
+            registration_timestamp=registration_timestamp,
             last_sync_time=datetime.fromisoformat(item["lastSyncTime"])
             if "lastSyncTime" in item
             else None,

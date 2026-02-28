@@ -1,6 +1,7 @@
 """Content generation service with validation and regeneration logic."""
 
 import logging
+import time
 from typing import Optional
 
 from src.models.content import Lesson, Quiz
@@ -12,8 +13,12 @@ from src.utils.error_handling import (
     NonRetryableError,
     handle_validation_error,
 )
+from src.utils.audit_logging import get_audit_logger
+from src.utils.monitoring import get_monitoring_service
 
 logger = logging.getLogger(__name__)
+audit_logger = get_audit_logger()
+monitoring_service = get_monitoring_service()
 
 
 class ContentGenerationService:
@@ -52,6 +57,7 @@ class ContentGenerationService:
         difficulty: str,
         student_context: dict,
         curriculum_standards: list[str],
+        student_id: Optional[str] = None,
     ) -> Lesson:
         """
         Generate a lesson with validation and regeneration.
@@ -63,6 +69,7 @@ class ContentGenerationService:
             difficulty: Difficulty level
             student_context: Student learning context
             curriculum_standards: Target curriculum standard IDs
+            student_id: Optional student identifier for audit logging
             
         Returns:
             Validated lesson
@@ -70,95 +77,153 @@ class ContentGenerationService:
         Raises:
             NonRetryableError: If regeneration fails after max attempts
         """
-        attempt = 0
-        last_error = None
+        # Track generation time
+        start_time = time.time()
+        success = False
         
-        while attempt < self.MAX_REGENERATION_ATTEMPTS:
-            attempt += 1
-            
-            try:
-                logger.info(
-                    f"Generating lesson (attempt {attempt}/{self.MAX_REGENERATION_ATTEMPTS}): "
-                    f"{topic}, {subject}, grade {grade}"
-                )
-                
-                # Generate lesson using Bedrock Agent (with built-in retry)
-                lesson = self.bedrock_service.generate_lesson(
-                    topic=topic,
+        try:
+            # Log content generation request
+            if student_id:
+                audit_logger.log_content_generation_request(
+                    student_id=student_id,
                     subject=subject,
-                    grade=grade,
+                    topic=topic,
+                    content_type="lesson",
                     difficulty=difficulty,
-                    student_context=student_context,
                     curriculum_standards=curriculum_standards,
                 )
+            
+            attempt = 0
+            last_error = None
+            
+            while attempt < self.MAX_REGENERATION_ATTEMPTS:
+                attempt += 1
                 
-                # Validate generated lesson
-                validation_result = self.validator_service.validate_lesson(
-                    lesson=lesson,
-                    grade=grade,
-                    target_standards=curriculum_standards,
-                )
-                
-                # Log validation result
-                logger.info(
-                    f"Lesson validation result: {validation_result.status}, "
-                    f"passed checks: {len(validation_result.passed_checks)}, "
-                    f"failed checks: {len(validation_result.failed_checks)}"
-                )
-                
-                # Check if validation passed
-                if validation_result.status == ValidationStatus.PASSED:
-                    logger.info(f"Lesson generated and validated successfully on attempt {attempt}")
-                    return lesson
-                
-                # Check if regeneration is needed
-                if self.validator_service.validator.should_regenerate(validation_result):
-                    logger.warning(
-                        f"Lesson validation failed on attempt {attempt}. "
-                        f"Issues: {[issue.message for issue in validation_result.issues]}"
+                try:
+                    logger.info(
+                        f"Generating lesson (attempt {attempt}/{self.MAX_REGENERATION_ATTEMPTS}): "
+                        f"{topic}, {subject}, grade {grade}"
                     )
                     
-                    # Adjust prompts based on validation issues
-                    student_context = self._adjust_context_for_issues(
-                        student_context,
-                        validation_result.issues,
+                    # Generate lesson using Bedrock Agent (with built-in retry)
+                    lesson = self.bedrock_service.generate_lesson(
+                        topic=topic,
+                        subject=subject,
+                        grade=grade,
+                        difficulty=difficulty,
+                        student_context=student_context,
+                        curriculum_standards=curriculum_standards,
                     )
                     
-                    last_error = handle_validation_error(
-                        Exception(f"Validation failed: {validation_result.issues}"),
-                        attempt,
+                    # Validate generated lesson
+                    validation_result = self.validator_service.validate_lesson(
+                        lesson=lesson,
+                        grade=grade,
+                        target_standards=curriculum_standards,
                     )
                     
+                    # Log validation result
+                    logger.info(
+                        f"Lesson validation result: {validation_result.status}, "
+                        f"passed checks: {len(validation_result.passed_checks)}, "
+                        f"failed checks: {len(validation_result.failed_checks)}"
+                    )
+                    
+                    # Log validation result to audit log
+                    if student_id:
+                        audit_logger.log_validation_result(
+                            content_id=lesson.lesson_id,
+                            content_type="lesson",
+                            validation_status=validation_result.status.value,
+                            alignment_score=validation_result.alignment_score,
+                            passed_checks=validation_result.passed_checks,
+                            failed_checks=validation_result.failed_checks,
+                            student_id=student_id,
+                        )
+                    
+                    # Emit validation metrics
+                    monitoring_service.emit_validation_metrics(
+                        passed=(validation_result.status == ValidationStatus.PASSED),
+                        content_type="lesson",
+                        alignment_score=validation_result.alignment_score,
+                    )
+                    
+                    # Check if validation passed
+                    if validation_result.status == ValidationStatus.PASSED:
+                        logger.info(f"Lesson generated and validated successfully on attempt {attempt}")
+                        success = True
+                        return lesson
+                    
+                    # Check if regeneration is needed
+                    if self.validator_service.validator.should_regenerate(validation_result):
+                        logger.warning(
+                            f"Lesson validation failed on attempt {attempt}. "
+                            f"Issues: {[issue.message for issue in validation_result.issues]}"
+                        )
+                        
+                        # Log content rejection
+                        if student_id:
+                            audit_logger.log_content_rejection(
+                                content_id=lesson.lesson_id,
+                                content_type="lesson",
+                                rejection_reasons=[issue.message for issue in validation_result.issues],
+                                regeneration_attempt=attempt,
+                                max_attempts=self.MAX_REGENERATION_ATTEMPTS,
+                                student_id=student_id,
+                            )
+                        
+                        # Adjust prompts based on validation issues
+                        student_context = self._adjust_context_for_issues(
+                            student_context,
+                            validation_result.issues,
+                        )
+                        
+                        last_error = handle_validation_error(
+                            Exception(f"Validation failed: {validation_result.issues}"),
+                            attempt,
+                        )
+                        
+                        # Continue to next attempt
+                        continue
+                    else:
+                        # Validation failed but doesn't require regeneration
+                        logger.warning(
+                            f"Lesson validation failed but accepted: {validation_result.status}"
+                        )
+                        success = True
+                        return lesson
+                        
+                except RetryableError as e:
+                    logger.error(f"Retryable error on attempt {attempt}: {e}")
+                    last_error = e
                     # Continue to next attempt
                     continue
-                else:
-                    # Validation failed but doesn't require regeneration
-                    logger.warning(
-                        f"Lesson validation failed but accepted: {validation_result.status}"
-                    )
-                    return lesson
                     
-            except RetryableError as e:
-                logger.error(f"Retryable error on attempt {attempt}: {e}")
-                last_error = e
-                # Continue to next attempt
-                continue
-                
-            except NonRetryableError as e:
-                logger.error(f"Non-retryable error: {e}")
-                raise
+                except NonRetryableError as e:
+                    logger.error(f"Non-retryable error: {e}")
+                    raise
+            
+            # Max attempts reached
+            error_msg = (
+                f"Failed to generate valid lesson after {self.MAX_REGENERATION_ATTEMPTS} attempts. "
+                f"Last error: {last_error}"
+            )
+            logger.error(error_msg)
+            raise NonRetryableError(
+                error_msg,
+                "CONTENT_REGENERATION_FAILED",
+                details={"attempts": self.MAX_REGENERATION_ATTEMPTS},
+            )
         
-        # Max attempts reached
-        error_msg = (
-            f"Failed to generate valid lesson after {self.MAX_REGENERATION_ATTEMPTS} attempts. "
-            f"Last error: {last_error}"
-        )
-        logger.error(error_msg)
-        raise NonRetryableError(
-            error_msg,
-            "CONTENT_REGENERATION_FAILED",
-            details={"attempts": self.MAX_REGENERATION_ATTEMPTS},
-        )
+        finally:
+            # Emit content generation metrics
+            latency_ms = (time.time() - start_time) * 1000
+            monitoring_service.emit_content_generation_metrics(
+                latency_ms=latency_ms,
+                success=success,
+                content_type="lesson",
+                subject=subject,
+            )
     
     def generate_validated_quiz(
         self,
@@ -168,6 +233,7 @@ class ContentGenerationService:
         difficulty: str,
         question_count: int,
         learning_objectives: list[str],
+        student_id: Optional[str] = None,
     ) -> Quiz:
         """
         Generate a quiz with validation and regeneration.
@@ -179,6 +245,7 @@ class ContentGenerationService:
             difficulty: Difficulty level
             question_count: Number of questions
             learning_objectives: Target learning objectives
+            student_id: Optional student identifier for audit logging
             
         Returns:
             Validated quiz
@@ -186,89 +253,147 @@ class ContentGenerationService:
         Raises:
             NonRetryableError: If regeneration fails after max attempts
         """
-        attempt = 0
-        last_error = None
+        # Track generation time
+        start_time = time.time()
+        success = False
         
-        while attempt < self.MAX_REGENERATION_ATTEMPTS:
-            attempt += 1
-            
-            try:
-                logger.info(
-                    f"Generating quiz (attempt {attempt}/{self.MAX_REGENERATION_ATTEMPTS}): "
-                    f"{topic}, {subject}, grade {grade}"
-                )
-                
-                # Generate quiz using Bedrock Agent (with built-in retry)
-                quiz = self.bedrock_service.generate_quiz(
-                    topic=topic,
+        try:
+            # Log content generation request
+            if student_id:
+                audit_logger.log_content_generation_request(
+                    student_id=student_id,
                     subject=subject,
-                    grade=grade,
+                    topic=topic,
+                    content_type="quiz",
                     difficulty=difficulty,
-                    question_count=question_count,
-                    learning_objectives=learning_objectives,
+                    curriculum_standards=learning_objectives,
                 )
+            
+            attempt = 0
+            last_error = None
+            
+            while attempt < self.MAX_REGENERATION_ATTEMPTS:
+                attempt += 1
                 
-                # Validate generated quiz
-                validation_result = self.validator_service.validate_quiz(
-                    quiz=quiz,
-                    grade=grade,
-                    target_standards=learning_objectives,
-                )
-                
-                # Log validation result
-                logger.info(
-                    f"Quiz validation result: {validation_result.status}, "
-                    f"passed checks: {len(validation_result.passed_checks)}, "
-                    f"failed checks: {len(validation_result.failed_checks)}"
-                )
-                
-                # Check if validation passed
-                if validation_result.status == ValidationStatus.PASSED:
-                    logger.info(f"Quiz generated and validated successfully on attempt {attempt}")
-                    return quiz
-                
-                # Check if regeneration is needed
-                if self.validator_service.validator.should_regenerate(validation_result):
-                    logger.warning(
-                        f"Quiz validation failed on attempt {attempt}. "
-                        f"Issues: {[issue.message for issue in validation_result.issues]}"
+                try:
+                    logger.info(
+                        f"Generating quiz (attempt {attempt}/{self.MAX_REGENERATION_ATTEMPTS}): "
+                        f"{topic}, {subject}, grade {grade}"
                     )
                     
-                    last_error = handle_validation_error(
-                        Exception(f"Validation failed: {validation_result.issues}"),
-                        attempt,
+                    # Generate quiz using Bedrock Agent (with built-in retry)
+                    quiz = self.bedrock_service.generate_quiz(
+                        topic=topic,
+                        subject=subject,
+                        grade=grade,
+                        difficulty=difficulty,
+                        question_count=question_count,
+                        learning_objectives=learning_objectives,
                     )
                     
+                    # Validate generated quiz
+                    validation_result = self.validator_service.validate_quiz(
+                        quiz=quiz,
+                        grade=grade,
+                        target_standards=learning_objectives,
+                    )
+                    
+                    # Log validation result
+                    logger.info(
+                        f"Quiz validation result: {validation_result.status}, "
+                        f"passed checks: {len(validation_result.passed_checks)}, "
+                        f"failed checks: {len(validation_result.failed_checks)}"
+                    )
+                    
+                    # Log validation result to audit log
+                    if student_id:
+                        audit_logger.log_validation_result(
+                            content_id=quiz.quiz_id,
+                            content_type="quiz",
+                            validation_status=validation_result.status.value,
+                            alignment_score=validation_result.alignment_score,
+                            passed_checks=validation_result.passed_checks,
+                            failed_checks=validation_result.failed_checks,
+                            student_id=student_id,
+                        )
+                    
+                    # Emit validation metrics
+                    monitoring_service.emit_validation_metrics(
+                        passed=(validation_result.status == ValidationStatus.PASSED),
+                        content_type="quiz",
+                        alignment_score=validation_result.alignment_score,
+                    )
+                    
+                    # Check if validation passed
+                    if validation_result.status == ValidationStatus.PASSED:
+                        logger.info(f"Quiz generated and validated successfully on attempt {attempt}")
+                        success = True
+                        return quiz
+                    
+                    # Check if regeneration is needed
+                    if self.validator_service.validator.should_regenerate(validation_result):
+                        logger.warning(
+                            f"Quiz validation failed on attempt {attempt}. "
+                            f"Issues: {[issue.message for issue in validation_result.issues]}"
+                        )
+                        
+                        # Log content rejection
+                        if student_id:
+                            audit_logger.log_content_rejection(
+                                content_id=quiz.quiz_id,
+                                content_type="quiz",
+                                rejection_reasons=[issue.message for issue in validation_result.issues],
+                                regeneration_attempt=attempt,
+                                max_attempts=self.MAX_REGENERATION_ATTEMPTS,
+                                student_id=student_id,
+                            )
+                        
+                        last_error = handle_validation_error(
+                            Exception(f"Validation failed: {validation_result.issues}"),
+                            attempt,
+                        )
+                        
+                        # Continue to next attempt
+                        continue
+                    else:
+                        # Validation failed but doesn't require regeneration
+                        logger.warning(
+                            f"Quiz validation failed but accepted: {validation_result.status}"
+                        )
+                        success = True
+                        return quiz
+                        
+                except RetryableError as e:
+                    logger.error(f"Retryable error on attempt {attempt}: {e}")
+                    last_error = e
                     # Continue to next attempt
                     continue
-                else:
-                    # Validation failed but doesn't require regeneration
-                    logger.warning(
-                        f"Quiz validation failed but accepted: {validation_result.status}"
-                    )
-                    return quiz
                     
-            except RetryableError as e:
-                logger.error(f"Retryable error on attempt {attempt}: {e}")
-                last_error = e
-                # Continue to next attempt
-                continue
-                
-            except NonRetryableError as e:
-                logger.error(f"Non-retryable error: {e}")
-                raise
+                except NonRetryableError as e:
+                    logger.error(f"Non-retryable error: {e}")
+                    raise
+            
+            # Max attempts reached
+            error_msg = (
+                f"Failed to generate valid quiz after {self.MAX_REGENERATION_ATTEMPTS} attempts. "
+                f"Last error: {last_error}"
+            )
+            logger.error(error_msg)
+            raise NonRetryableError(
+                error_msg,
+                "CONTENT_REGENERATION_FAILED",
+                details={"attempts": self.MAX_REGENERATION_ATTEMPTS},
+            )
         
-        # Max attempts reached
-        error_msg = (
-            f"Failed to generate valid quiz after {self.MAX_REGENERATION_ATTEMPTS} attempts. "
-            f"Last error: {last_error}"
-        )
-        logger.error(error_msg)
-        raise NonRetryableError(
-            error_msg,
-            "CONTENT_REGENERATION_FAILED",
-            details={"attempts": self.MAX_REGENERATION_ATTEMPTS},
-        )
+        finally:
+            # Emit content generation metrics
+            latency_ms = (time.time() - start_time) * 1000
+            monitoring_service.emit_content_generation_metrics(
+                latency_ms=latency_ms,
+                success=success,
+                content_type="quiz",
+                subject=subject,
+            )
     
     def _adjust_context_for_issues(
         self,

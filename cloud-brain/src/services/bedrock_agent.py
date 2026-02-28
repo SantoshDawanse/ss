@@ -10,7 +10,9 @@ from botocore.exceptions import ClientError, ReadTimeoutError
 from src.models.content import (
     Hint,
     Lesson,
+    LessonGenerationRequest,
     Quiz,
+    QuizGenerationRequest,
     RevisionPlan,
     StudyTrack,
 )
@@ -149,6 +151,32 @@ class BedrockAgentService:
                 "INTERNAL_ERROR",
             )
 
+    def generate_lesson_from_request(
+        self,
+        request: LessonGenerationRequest,
+    ) -> Lesson:
+        """
+        Generate a personalized lesson from a LessonGenerationRequest.
+
+        Args:
+            request: Lesson generation request
+
+        Returns:
+            Generated lesson
+
+        Raises:
+            RetryableError: If generation fails after retries
+            NonRetryableError: If request is invalid
+        """
+        return self.generate_lesson(
+            topic=request.topic,
+            subject=request.subject,
+            grade=request.grade,
+            difficulty=request.difficulty.value,
+            student_context=request.student_context,
+            curriculum_standards=request.curriculum_standards,
+        )
+
     @exponential_backoff_retry(max_attempts=3, initial_delay=1.0, max_delay=30.0)
     def generate_quiz(
         self,
@@ -234,6 +262,32 @@ class BedrockAgentService:
                 f"Quiz generation failed: {e}",
                 "INTERNAL_ERROR",
             )
+
+    def generate_quiz_from_request(
+        self,
+        request: QuizGenerationRequest,
+    ) -> Quiz:
+        """
+        Generate a quiz from a QuizGenerationRequest.
+
+        Args:
+            request: Quiz generation request
+
+        Returns:
+            Generated quiz
+
+        Raises:
+            RetryableError: If generation fails after retries
+            NonRetryableError: If request is invalid
+        """
+        return self.generate_quiz(
+            topic=request.topic,
+            subject=request.subject,
+            grade=request.grade,
+            difficulty=request.difficulty.value,
+            question_count=request.question_count,
+            learning_objectives=request.learning_objectives,
+        )
 
     def generate_hints(
         self,
@@ -366,6 +420,205 @@ class BedrockAgentService:
         except Exception as e:
             logger.error(f"Failed to generate study track: {e}")
             raise ValueError(f"Study track generation failed: {e}")
+    def generate_learning_content(
+        self,
+        student_id: str,
+        knowledge_model: Optional[KnowledgeModel],
+        performance_logs: list[Any],
+        bundle_duration: int = 7,
+        subjects: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """
+        Generate complete learning content bundle (lessons and quizzes).
+
+        Args:
+            student_id: Student identifier
+            knowledge_model: Current knowledge model
+            performance_logs: Recent performance logs
+            bundle_duration: Bundle duration in days
+            subjects: List of subjects to generate content for
+
+        Returns:
+            Dict with lessons and quizzes
+
+        Raises:
+            ValueError: If generation fails
+        """
+        logger.info(f"Generating learning content for student: {student_id}")
+
+        if not subjects:
+            subjects = ["Mathematics"]
+
+        content = {
+            "lessons": [],
+            "quizzes": [],
+        }
+
+        # Use default grade (8th grade for MVP)
+        # TODO: Add grade field to Student model and KnowledgeModel
+        grade = 8
+
+        # Try to generate content using Bedrock Agent
+        bedrock_failed = False
+        
+        # Generate content for each subject
+        for subject in subjects:
+            try:
+                # Determine topics based on knowledge model
+                if knowledge_model and knowledge_model.subjects:
+                    # Find topics that need work from subjects
+                    weak_topics = []
+                    for subject_name, subject_knowledge in knowledge_model.subjects.items():
+                        for topic_id, topic_mastery in subject_knowledge.topics.items():
+                            if topic_mastery.proficiency < 0.7:
+                                weak_topics.append(topic_id)
+                    topics = weak_topics[:3] if weak_topics else ["Introduction"]
+                else:
+                    # Default topics for new students
+                    topics = ["Introduction"]
+
+                # Generate lessons for each topic
+                for topic in topics:
+                    try:
+                        lesson = self.generate_lesson(
+                            topic=topic,
+                            subject=subject,
+                            grade=grade,
+                            difficulty="medium",
+                            student_context={
+                                "student_id": student_id,
+                                "recent_performance": len(performance_logs),
+                            },
+                            curriculum_standards=[],
+                        )
+                        content["lessons"].append(lesson.model_dump())
+                    except Exception as e:
+                        logger.warning(f"Failed to generate lesson for {topic}: {e}")
+                        bedrock_failed = True
+                        continue
+
+                # Generate quizzes for each topic
+                for topic in topics:
+                    try:
+                        quiz = self.generate_quiz(
+                            topic=topic,
+                            subject=subject,
+                            grade=grade,
+                            difficulty="medium",
+                            question_count=5,
+                            learning_objectives=[],
+                        )
+                        content["quizzes"].append(quiz.model_dump())
+                    except Exception as e:
+                        logger.warning(f"Failed to generate quiz for {topic}: {e}")
+                        bedrock_failed = True
+                        continue
+
+            except Exception as e:
+                logger.error(f"Failed to generate content for {subject}: {e}")
+                bedrock_failed = True
+                continue
+
+        # If Bedrock Agent failed or no content generated, use mock content for MVP
+        if not content["lessons"] and not content["quizzes"]:
+            logger.warning("Bedrock Agent failed, using mock content for MVP")
+            content = self._generate_mock_content(student_id, subjects[0] if subjects else "Mathematics")
+
+        logger.info(
+            f"Generated {len(content['lessons'])} lessons and {len(content['quizzes'])} quizzes"
+        )
+
+        return content
+
+    def _generate_mock_content(self, student_id: str, subject: str) -> dict[str, Any]:
+        """
+        Generate mock content for MVP when Bedrock Agent is unavailable.
+
+        Args:
+            student_id: Student identifier
+            subject: Subject area
+
+        Returns:
+            Dict with mock lessons and quizzes
+        """
+        from datetime import datetime
+        
+        logger.info(f"Generating mock content for student {student_id}")
+        
+        # Mock lesson
+        mock_lesson = {
+            "lesson_id": f"mock-lesson-{student_id}-1",
+            "title": f"Introduction to {subject}",
+            "subject": subject,
+            "topic": "Introduction",
+            "grade": 8,
+            "difficulty": "medium",
+            "learning_objectives": [
+                f"Understand basic concepts of {subject}",
+                "Apply fundamental principles",
+                "Solve simple problems"
+            ],
+            "content": f"Welcome to {subject}! This lesson introduces you to the fundamental concepts.",
+            "examples": [
+                {
+                    "title": "Example 1",
+                    "problem": "Sample problem",
+                    "solution": "Sample solution",
+                    "explanation": "This demonstrates the concept"
+                }
+            ],
+            "practice_problems": [
+                {
+                    "problem": "Practice problem 1",
+                    "hint": "Think about the basic principles",
+                    "answer": "Sample answer"
+                }
+            ],
+            "estimated_duration": 30,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        # Mock quiz
+        mock_quiz = {
+            "quiz_id": f"mock-quiz-{student_id}-1",
+            "title": f"{subject} Practice Quiz",
+            "subject": subject,
+            "topic": "Introduction",
+            "grade": 8,
+            "difficulty": "medium",
+            "questions": [
+                {
+                    "question_id": "q1",
+                    "question_text": f"What is a fundamental concept in {subject}?",
+                    "question_type": "multiple_choice",
+                    "options": ["Option A", "Option B", "Option C", "Option D"],
+                    "correct_answer": "Option A",
+                    "explanation": "This is the correct answer because...",
+                    "points": 10,
+                    "cognitive_level": 2
+                },
+                {
+                    "question_id": "q2",
+                    "question_text": "Solve this problem:",
+                    "question_type": "multiple_choice",
+                    "options": ["Answer 1", "Answer 2", "Answer 3", "Answer 4"],
+                    "correct_answer": "Answer 1",
+                    "explanation": "The solution is...",
+                    "points": 10,
+                    "cognitive_level": 3
+                }
+            ],
+            "total_points": 20,
+            "passing_score": 14,
+            "time_limit": 15,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        return {
+            "lessons": [mock_lesson],
+            "quizzes": [mock_quiz]
+        }
+
 
     def _invoke_action_group(
         self,

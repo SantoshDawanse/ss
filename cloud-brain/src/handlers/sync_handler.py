@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from aws_lambda_powertools import Logger
@@ -111,10 +111,17 @@ def upload(event: dict, context: LambdaContext) -> dict:
         # Parse request body
         try:
             body = json.loads(event.get("body", "{}"))
+            logger.info(f"Request body keys: {list(body.keys())}")
+            logger.info(f"Logs type: {type(body.get('logs'))}")
+            if isinstance(body.get('logs'), str):
+                logger.info(f"Logs length (string): {len(body.get('logs', ''))}")
+            elif isinstance(body.get('logs'), list):
+                logger.info(f"Logs length (list): {len(body.get('logs', []))}")
             request = SyncUploadRequest(**body)
         except Exception as e:
             logger.error(f"Invalid request body: {str(e)}")
-            return _create_error_response(400, "Invalid request body", "INVALID_REQUEST")
+            logger.error(f"Request body: {json.dumps(body, default=str)[:500]}")
+            return _create_error_response(400, f"Invalid request body: {str(e)}", "INVALID_REQUEST")
 
         # Verify student ID matches authenticated user
         if request.student_id != student_id:
@@ -139,19 +146,20 @@ def upload(event: dict, context: LambdaContext) -> dict:
             logger.info(f"Created sync session: {session.session_id}")
 
         # Update checkpoint for resume capability
+        logs_count = len(request.logs) if isinstance(request.logs, list) else 1
         sync_repo.update_checkpoint(
             session.session_id,
             {
                 "stage": "upload_started",
                 "timestamp": datetime.utcnow().isoformat(),
-                "logs_count": len(request.logs),
+                "logs_count": logs_count,
             },
         )
 
         # Decompress and validate logs
         try:
             logs_data = _decompress_logs(request.logs)
-            performance_logs = _validate_logs(logs_data)
+            performance_logs = _validate_logs(logs_data) if logs_data else []
             logger.info(f"Received {len(performance_logs)} performance logs")
         except Exception as e:
             logger.error(f"Log processing failed: {str(e)}")
@@ -164,14 +172,15 @@ def upload(event: dict, context: LambdaContext) -> dict:
                 ErrorCode.INVALID_LOGS,
             )
 
-        # Calculate checksum
-        logs_json = json.dumps(logs_data, sort_keys=True)
+        # Calculate checksum (convert PerformanceLog objects to dicts for JSON serialization)
+        logs_dict = [log.model_dump() if hasattr(log, 'model_dump') else log for log in performance_logs]
+        logs_json = json.dumps(logs_dict, sort_keys=True, default=str)
         checksum = hashlib.sha256(logs_json.encode()).hexdigest()
 
         # Store upload data
         upload_data = SyncUploadData(
             performance_logs=logs_data,
-            compressed_size=len(json.dumps(request.logs)),
+            compressed_size=len(json.dumps(logs_dict, default=str)),
             checksum=checksum,
         )
         sync_repo.update_upload_data(session.session_id, upload_data)
@@ -193,20 +202,22 @@ def upload(event: dict, context: LambdaContext) -> dict:
             knowledge_model = knowledge_repo.get_knowledge_model(student_id)
             
             if knowledge_model:
-                # Update existing model
+                # Update existing model with new performance logs
                 updated_model = personalization_engine.update_knowledge_model(
                     knowledge_model, performance_logs
                 )
                 knowledge_repo.save_knowledge_model(updated_model)
                 logger.info(f"Updated knowledge model for student {student_id}")
             else:
-                # Create new model for new student
-                logger.info(f"No existing knowledge model for student {student_id}")
-                # Knowledge model will be created during first content generation
+                # First-time user: Create initial knowledge model
+                logger.info(f"Creating initial knowledge model for new student {student_id}")
+                initial_model = knowledge_repo.create_initial_knowledge_model(student_id)
+                knowledge_repo.save_knowledge_model(initial_model)
+                logger.info(f"Created initial knowledge model for student {student_id}")
         except Exception as e:
             logger.error(f"Failed to update knowledge model: {str(e)}")
             logger.error(traceback.format_exc())
-            # Don't fail the sync - we can still generate content
+            # Don't fail the sync - we can still generate content with default model
 
         # Update checkpoint after knowledge model update
         sync_repo.update_checkpoint(
@@ -229,7 +240,7 @@ def upload(event: dict, context: LambdaContext) -> dict:
 
         logger.info(f"Upload completed successfully for session {session.session_id}")
         sync_success = True
-        return _create_response(200, response.model_dump())
+        return _create_response(200, response.model_dump(mode='json', by_alias=True))
 
     except Exception as e:
         logger.error(f"Unexpected error in upload handler: {str(e)}")
@@ -244,26 +255,64 @@ def upload(event: dict, context: LambdaContext) -> dict:
         )
 
 
-def _decompress_logs(logs: list[dict]) -> list[dict]:
+def _decompress_logs(logs: str | list[dict]) -> list[dict]:
     """
-    Decompress performance logs if compressed.
+    Decompress and decrypt performance logs if compressed/encrypted.
 
     Args:
-        logs: List of log entries (may be compressed)
+        logs: List of log entries or base64-encoded encrypted string
 
     Returns:
         Decompressed log entries
     """
-    # Check if logs are compressed (base64 encoded gzip)
+    # Check if logs are encrypted/compressed (base64 encoded string)
     if isinstance(logs, str):
         try:
             import base64
-            compressed = base64.b64decode(logs)
-            decompressed = gzip.decompress(compressed)
-            return json.loads(decompressed)
-        except Exception:
-            # Not compressed, treat as JSON string
-            return json.loads(logs)
+            
+            # Try to decode as base64 first
+            decoded = base64.b64decode(logs)
+            decoded_str = decoded.decode('utf-8')
+            
+            # Check if it's an encrypted format with {ciphertext, iv} structure
+            try:
+                encrypted_obj = json.loads(decoded_str)
+                if isinstance(encrypted_obj, dict) and 'ciphertext' in encrypted_obj and 'iv' in encrypted_obj:
+                    # This is encrypted data from the frontend
+                    # Decode the ciphertext (it's base64 encoded)
+                    inner_decoded = base64.b64decode(encrypted_obj['ciphertext'])
+                    inner_str = inner_decoded.decode('utf-8')
+                    
+                    # The format is "iv:data", split and get the data part
+                    if ':' in inner_str:
+                        parts = inner_str.split(':', 1)
+                        data_str = parts[1] if len(parts) > 1 else parts[0]
+                        return json.loads(data_str)
+                    else:
+                        return json.loads(inner_str)
+            except (json.JSONDecodeError, KeyError):
+                pass
+            
+            # Try gzip decompression
+            try:
+                decompressed = gzip.decompress(decoded)
+                return json.loads(decompressed)
+            except Exception:
+                # Not gzipped, try as plain JSON
+                try:
+                    return json.loads(decoded_str)
+                except Exception:
+                    # If it's still a string after decoding, parse it
+                    return json.loads(logs)
+        except Exception as e:
+            logger.warning(f"Failed to decode logs: {str(e)}, treating as JSON string")
+            # Last resort: try to parse as JSON string directly
+            try:
+                return json.loads(logs)
+            except Exception:
+                # If it's an empty string or invalid, return empty list
+                logger.error(f"Could not parse logs: {str(e)}")
+                return []
     
     # Already a list
     return logs
@@ -284,6 +333,10 @@ def _validate_logs(logs: list[dict]) -> list[PerformanceLog]:
     """
     if not isinstance(logs, list):
         raise ValueError("Logs must be a list")
+    
+    # Empty logs are valid for first-time users
+    if len(logs) == 0:
+        return []
 
     validated_logs = []
     for i, log in enumerate(logs):
@@ -368,8 +421,8 @@ def download(event: dict, context: LambdaContext) -> dict:
         # Generate bundle if not already generated
         if not session.download:
             try:
-                from services.bundle_generator import BundleGenerator
-                from repositories.knowledge_model_repository import KnowledgeModelRepository
+                from src.services.bundle_generator import BundleGenerator
+                from src.repositories.knowledge_model_repository import KnowledgeModelRepository
                 
                 knowledge_repo = KnowledgeModelRepository()
                 bundle_generator = BundleGenerator()
@@ -410,8 +463,7 @@ def download(event: dict, context: LambdaContext) -> dict:
                 )
                 
                 # Create download data
-                from models.sync import SyncDownloadData
-                from datetime import datetime, timedelta
+                from src.models.sync import SyncDownloadData
                 
                 download_data = SyncDownloadData(
                     bundle_url=bundle_metadata.presigned_url,
@@ -447,7 +499,6 @@ def download(event: dict, context: LambdaContext) -> dict:
         sync_repo.update_session_status(session_id, SyncStatus.COMPLETE)
 
         # Create response
-        from datetime import datetime, timedelta
         response = SyncDownloadResponse(
             bundle_url=session.download.bundle_url,
             bundle_size=session.download.bundle_size,
@@ -457,7 +508,7 @@ def download(event: dict, context: LambdaContext) -> dict:
 
         logger.info(f"Download completed successfully for session {session_id}")
         sync_success = True
-        return _create_response(200, response.model_dump())
+        return _create_response(200, response.model_dump(mode='json', by_alias=True))
 
     except Exception as e:
         logger.error(f"Unexpected error in download handler: {str(e)}")

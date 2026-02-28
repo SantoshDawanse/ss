@@ -1,7 +1,8 @@
 """S3 storage service for learning bundles."""
 
 import logging
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
 from typing import Optional
 
 import boto3
@@ -37,24 +38,26 @@ class BundleStorage:
         student_id: str,
         compressed_data: bytes,
         metadata: Optional[dict] = None,
+        max_retries: int = 3,
     ) -> str:
         """
-        Upload compressed bundle to S3.
+        Upload compressed bundle to S3 with retry logic.
 
         Args:
             bundle_id: Unique bundle identifier
             student_id: Student identifier
             compressed_data: Compressed bundle bytes
             metadata: Optional metadata to attach to S3 object
+            max_retries: Maximum number of retry attempts (default: 3)
 
         Returns:
             S3 object key
 
         Raises:
-            Exception: If upload fails
+            Exception: If upload fails after all retries
         """
-        # Construct S3 key: students/{student_id}/bundles/{bundle_id}.bundle
-        s3_key = f"students/{student_id}/bundles/{bundle_id}.bundle"
+        # Construct S3 key: {student_id}/{bundle_id}.gz (as per design document)
+        s3_key = f"{student_id}/{bundle_id}.gz"
 
         # Prepare metadata
         s3_metadata = metadata or {}
@@ -66,35 +69,46 @@ class BundleStorage:
             }
         )
 
-        try:
-            # Upload to S3
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=s3_key,
-                Body=compressed_data,
-                Metadata=s3_metadata,
-                ContentType="application/octet-stream",
-                ServerSideEncryption="AES256",  # Enable server-side encryption
-            )
+        # Implement retry logic with exponential backoff
+        for attempt in range(max_retries):
+            try:
+                # Upload to S3
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=s3_key,
+                    Body=compressed_data,
+                    Metadata=s3_metadata,
+                    ContentType="application/gzip",
+                    ServerSideEncryption="AES256",  # Enable server-side encryption
+                )
 
-            logger.info(
-                f"Uploaded bundle {bundle_id} for student {student_id} to S3: {s3_key}"
-            )
-            return s3_key
+                logger.info(
+                    f"Uploaded bundle {bundle_id} for student {student_id} to S3: {s3_key}"
+                )
+                return s3_key
 
-        except ClientError as e:
-            logger.error(f"Failed to upload bundle to S3: {e}")
-            raise Exception(f"S3 upload failed: {e}")
+            except ClientError as e:
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 1s, 2s, 4s
+                    delay = 2**attempt
+                    logger.warning(
+                        f"S3 upload attempt {attempt + 1}/{max_retries} failed, "
+                        f"retrying in {delay}s: {e}"
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Failed to upload bundle to S3 after {max_retries} attempts: {e}")
+                    raise Exception(f"S3 upload failed after {max_retries} retries: {e}")
 
     def generate_presigned_url(
-        self, s3_key: str, expiration: int = 3600
+        self, s3_key: str, expiration: int = 1209600  # 14 days in seconds
     ) -> str:
         """
         Generate presigned URL for bundle download.
 
         Args:
             s3_key: S3 object key
-            expiration: URL expiration time in seconds (default: 1 hour)
+            expiration: URL expiration time in seconds (default: 14 days)
 
         Returns:
             Presigned URL for download
@@ -109,7 +123,10 @@ class BundleStorage:
                 ExpiresIn=expiration,
             )
 
-            logger.info(f"Generated presigned URL for {s3_key}, expires in {expiration}s")
+            logger.info(
+                f"Generated presigned URL for {s3_key}, "
+                f"expires in {expiration}s ({expiration // 86400} days)"
+            )
             return url
 
         except ClientError as e:

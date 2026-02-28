@@ -11,6 +11,7 @@ import { AdaptiveContentSelectionService } from '../services/AdaptiveContentSele
 import { LocalizationService } from '../services/LocalizationService';
 import { AccessibilityService } from '../services/AccessibilityService';
 import { CulturalContextService } from '../services/CulturalContextService';
+import { EncryptionService } from '../services/EncryptionService';
 import { initializeDatabase } from '../utils/initializeDatabase';
 import { StudentProfileService } from '../services/StudentProfileService';
 
@@ -72,6 +73,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Set the studentId first
       setStudentId(newStudentId);
 
+      // Initialize encryption service (required for sync)
+      const encryption = EncryptionService.getInstance();
+      await encryption.initialize();
+      console.log('Encryption service initialized');
+
       // Initialize localization and accessibility services
       const localization = LocalizationService.getInstance();
       await localization.initialize();
@@ -89,8 +95,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await db.initialize();
       setDbManager(db);
 
-      // Initialize sample data with the studentId
-      await initializeDatabase(db, newStudentId);
+      // NOTE: No sample data initialization - content comes from cloud-brain via sync
+      // First-time users will sync to get their initial personalized bundle
 
       // Initialize services with the studentId
       const content = new ContentDeliveryService(db);

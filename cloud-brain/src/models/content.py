@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -151,3 +151,44 @@ class LearningBundle(BaseModel):
     total_size: int = Field(..., gt=0, description="Total size in bytes")
     checksum: str = Field(..., description="Bundle checksum")
     presigned_url: Optional[str] = Field(None, description="S3 presigned URL for download")
+
+
+class BundleMetadata(BaseModel):
+    """Metadata for a learning bundle stored in DynamoDB."""
+
+    bundle_id: str = Field(..., description="Unique bundle identifier")
+    student_id: str = Field(..., description="Student identifier")
+    generation_timestamp: datetime = Field(..., description="Bundle generation timestamp")
+    size_bytes: int = Field(..., gt=0, description="Bundle size in bytes")
+    content_count: int = Field(..., ge=0, description="Total number of lessons and quizzes")
+    subjects: list[str] = Field(..., description="List of subjects in bundle")
+    valid_until: datetime = Field(..., description="Bundle expiration timestamp")
+    s3_key: str = Field(..., description="S3 object key")
+    checksum: str = Field(..., description="SHA-256 checksum")
+    status: str = Field(default="active", description="Bundle status (active, archived, expired)")
+
+
+class LessonGenerationRequest(BaseModel):
+    """Request for lesson generation."""
+
+    topic: str = Field(..., description="Topic name")
+    subject: str = Field(..., description="Subject area")
+    grade: int = Field(..., ge=6, le=8, description="Grade level (6-8)")
+    difficulty: DifficultyLevel = Field(..., description="Difficulty level")
+    curriculum_standards: list[str] = Field(..., description="Target curriculum standard IDs")
+    student_context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Student learning context (proficiency, learning_velocity, recent_performance)",
+    )
+
+
+class QuizGenerationRequest(BaseModel):
+    """Request for quiz generation."""
+
+    topic: str = Field(..., description="Topic name")
+    subject: str = Field(..., description="Subject area")
+    grade: int = Field(..., ge=6, le=8, description="Grade level (6-8)")
+    difficulty: DifficultyLevel = Field(..., description="Difficulty level")
+    question_count: int = Field(..., ge=3, le=10, description="Number of questions (3-10)")
+    learning_objectives: list[str] = Field(..., description="Target learning objectives")
+

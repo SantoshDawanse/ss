@@ -9,41 +9,13 @@
  * - Archive old bundles
  * 
  * Requirements: 4.8, 7.7
- * 
- * TODO: Install required packages:
- * - expo-file-system (for file operations)
- * - expo-crypto (for checksum verification)
- * - react-native-rsa-native or similar (for RSA signature verification)
  */
 
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Crypto from 'expo-crypto';
 import { DatabaseManager } from '../database/DatabaseManager';
 import { LearningBundle, Lesson, Quiz, Hint, StudyTrack } from '../models';
 import { LearningBundleRow } from '../database/repositories/LearningBundleRepository';
-
-// Placeholder implementations for missing expo packages
-const FileSystem = {
-  readAsStringAsync: async (path: string, options?: any): Promise<string> => {
-    // TODO: Implement with expo-file-system
-    return '';
-  },
-};
-
-const Crypto = {
-  CryptoDigestAlgorithm: {
-    SHA256: 'SHA256',
-  },
-  CryptoEncoding: {
-    HEX: 'hex',
-  },
-  digestStringAsync: async (
-    algorithm: string,
-    data: string,
-    options?: any,
-  ): Promise<string> => {
-    // TODO: Implement with expo-crypto
-    return 'placeholder_hash_' + data.substring(0, 10);
-  },
-};
 
 // Bundle structure after decompression
 interface BundleData {
@@ -129,12 +101,15 @@ export class BundleImportService {
    */
   private async verifyChecksum(filePath: string, expectedChecksum: string): Promise<boolean> {
     try {
-      const fileContent = await FileSystem.readAsStringAsync(filePath);
+      const fileContent = await FileSystem.readAsStringAsync(filePath, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
+      // Hash the base64 content (expo-crypto will decode to binary before hashing)
       const hash = await Crypto.digestStringAsync(
         Crypto.CryptoDigestAlgorithm.SHA256,
         fileContent,
-        { encoding: Crypto.CryptoEncoding.HEX },
+        { encoding: Crypto.CryptoEncoding.BASE64 },
       );
 
       return hash.toLowerCase() === expectedChecksum.toLowerCase();
@@ -187,19 +162,28 @@ export class BundleImportService {
   /**
    * Decompress and parse bundle file.
    * 
-   * In production, use a proper decompression library like:
-   * - react-native-zip-archive for ZIP files
-   * - pako for gzip/deflate
-   * - brotli for brotli compression
+   * The bundle is expected to be gzip-compressed JSON.
+   * TODO: Install pako or react-native-zip-archive for proper gzip decompression
    */
   private async decompressBundle(bundlePath: string): Promise<BundleData> {
     try {
-      // Read compressed file
-      const compressedContent = await FileSystem.readAsStringAsync(bundlePath);
+      // Read compressed file as base64
+      const compressedContent = await FileSystem.readAsStringAsync(bundlePath, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
-      // Decompress (placeholder - in production use proper decompression)
-      // For now, assume the file is JSON encoded in base64
-      const decompressed = Buffer.from(compressedContent, 'base64').toString('utf-8');
+      // Decompress gzip
+      // TODO: Use pako.ungzip() or similar for proper gzip decompression
+      // For now, assume the content is base64-encoded JSON (for testing)
+      let decompressed: string;
+      try {
+        // Try to decode as base64 JSON (for testing/development)
+        // Use atob for React Native compatibility
+        decompressed = atob(compressedContent);
+      } catch (e) {
+        // If that fails, try to use it directly
+        decompressed = compressedContent;
+      }
       
       // Parse JSON
       const bundleData: BundleData = JSON.parse(decompressed);

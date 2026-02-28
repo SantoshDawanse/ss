@@ -108,7 +108,9 @@ export class EncryptionService {
       // This is a placeholder implementation using base64 encoding
       // TODO: Replace with proper AES-256-GCM encryption
       const combined = `${iv}:${data}`;
-      const encoded = Buffer.from(combined).toString('base64');
+      
+      // Use btoa for base64 encoding (React Native compatible)
+      const encoded = btoa(combined);
 
       return {
         ciphertext: encoded,
@@ -134,7 +136,9 @@ export class EncryptionService {
     try {
       // Placeholder decryption (matches placeholder encryption above)
       // TODO: Replace with proper AES-256-GCM decryption
-      const decoded = Buffer.from(encryptedData.ciphertext, 'base64').toString('utf-8');
+      
+      // Use atob for base64 decoding (React Native compatible)
+      const decoded = atob(encryptedData.ciphertext);
       const parts = decoded.split(':');
       
       if (parts.length < 2) {
@@ -189,7 +193,8 @@ export class EncryptionService {
     const encrypted = await this.encrypt(logsJson);
     
     // Return as base64-encoded JSON for transmission
-    return Buffer.from(JSON.stringify(encrypted)).toString('base64');
+    // Use btoa for React Native compatibility
+    return btoa(JSON.stringify(encrypted));
   }
 
   /**
@@ -200,7 +205,8 @@ export class EncryptionService {
    */
   public async decryptLogsFromSync(encryptedLogs: string): Promise<any[]> {
     try {
-      const encryptedJson = Buffer.from(encryptedLogs, 'base64').toString('utf-8');
+      // Use atob for React Native compatibility
+      const encryptedJson = atob(encryptedLogs);
       const encrypted: EncryptedData = JSON.parse(encryptedJson);
       const decrypted = await this.decrypt(encrypted);
       return JSON.parse(decrypted);

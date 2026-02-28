@@ -54,28 +54,34 @@ class SyncSession(BaseModel):
 class SyncUploadRequest(BaseModel):
     """Request for sync upload."""
 
-    student_id: str = Field(..., description="Student identifier")
-    logs: list[dict] = Field(..., description="Performance logs (compressed)")
+    model_config = {"populate_by_name": True}
+
+    student_id: str = Field(..., alias="studentId", description="Student identifier")
+    logs: str | list[dict] = Field(..., description="Performance logs (compressed or encrypted)")
     last_sync_time: Optional[datetime] = Field(
-        None, description="Last successful sync timestamp"
+        None, alias="lastSyncTime", description="Last successful sync timestamp"
     )
 
 
 class SyncUploadResponse(BaseModel):
     """Response for sync upload."""
 
-    session_id: str = Field(..., description="Sync session identifier")
-    logs_received: int = Field(..., description="Number of logs received")
-    bundle_ready: bool = Field(..., description="Whether bundle is ready for download")
+    model_config = {"populate_by_name": True}
+
+    session_id: str = Field(..., alias="sessionId", description="Sync session identifier")
+    logs_received: int = Field(..., alias="logsReceived", description="Number of logs received")
+    bundle_ready: bool = Field(..., alias="bundleReady", description="Whether bundle is ready for download")
 
 
 class SyncDownloadResponse(BaseModel):
     """Response for sync download."""
 
-    bundle_url: str = Field(..., description="S3 presigned URL for bundle")
-    bundle_size: int = Field(..., description="Bundle size in bytes")
+    model_config = {"populate_by_name": True}
+
+    bundle_url: str = Field(..., alias="bundleUrl", description="S3 presigned URL for bundle")
+    bundle_size: int = Field(..., alias="bundleSize", description="Bundle size in bytes")
     checksum: str = Field(..., description="SHA256 checksum")
-    valid_until: datetime = Field(..., description="URL expiration time")
+    valid_until: datetime = Field(..., alias="validUntil", description="URL expiration time")
 
 
 class HealthResponse(BaseModel):

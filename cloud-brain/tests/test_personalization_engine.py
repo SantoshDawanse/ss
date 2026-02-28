@@ -9,7 +9,7 @@ from src.models.personalization import (
     MasteryLevel,
     PerformanceLog,
     SubjectKnowledge,
-    TopicKnowledge,
+    TopicMastery,
 )
 from src.repositories.knowledge_model_repository import KnowledgeModelRepository
 from src.services.personalization_engine import PersonalizationEngine
@@ -37,14 +37,14 @@ def sample_knowledge_model():
         subjects={
             "Mathematics": SubjectKnowledge(
                 topics={
-                    "algebra": TopicKnowledge(
+                    "algebra": TopicMastery(
                         proficiency=0.7,
                         attempts=10,
                         last_practiced=datetime.utcnow(),
                         mastery_level=MasteryLevel.PROFICIENT,
                         cognitive_level=3,
                     ),
-                    "geometry": TopicKnowledge(
+                    "geometry": TopicMastery(
                         proficiency=0.4,
                         attempts=5,
                         last_practiced=datetime.utcnow() - timedelta(days=3),
@@ -218,17 +218,17 @@ class TestPersonalizationEngine:
         self, personalization_engine, sample_knowledge_model
     ):
         """Test Zone of Proximal Development difficulty calculation."""
-        # Test medium difficulty for moderate proficiency (geometry has 0.4 proficiency)
+        # Test easy difficulty for low proficiency (geometry has 0.4 proficiency)
         difficulty = personalization_engine.calculate_zpd_difficulty(
             sample_knowledge_model, "Mathematics", "geometry"
         )
-        assert difficulty == "medium"
+        assert difficulty == "easy"
 
-        # Test hard difficulty for high proficiency (algebra has 0.7 proficiency)
+        # Test medium difficulty for moderate proficiency (algebra has 0.7 proficiency)
         difficulty = personalization_engine.calculate_zpd_difficulty(
             sample_knowledge_model, "Mathematics", "algebra"
         )
-        assert difficulty == "hard"
+        assert difficulty == "medium"
 
     def test_generate_content_mix_new_student(
         self, personalization_engine

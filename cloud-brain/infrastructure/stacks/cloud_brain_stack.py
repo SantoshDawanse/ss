@@ -17,6 +17,7 @@ from aws_cdk import (
     Duration,
     RemovalPolicy,
     CfnOutput,
+    CfnResource,
 )
 from constructs import Construct
 
@@ -35,18 +36,22 @@ class CloudBrainStack(Stack):
         self.students_table = self._create_students_table()
         self.bundles_table = self._create_bundles_table()
         self.sync_sessions_table = self._create_sync_sessions_table()
+        self.knowledge_model_table = self._create_knowledge_model_table()
 
         # S3 Bucket for learning bundles
         self.bundles_bucket = self._create_bundles_bucket()
 
-        # Bedrock Agent IAM Role
-        self.bedrock_agent_role = self._create_bedrock_agent_role()
-
-        # Bedrock Agent (Note: Agent creation is done via API, not CDK)
-        # The role ARN is exported for use in agent creation
+        # Bedrock Agent IAM Role (commented out - not needed for dashboard)
+        # self.bedrock_agent_role = self._create_bedrock_agent_role()
 
         # Lambda Functions
-        self.content_generation_handler = self._create_content_generation_handler()
+        # self.mcp_server_handler = self._create_mcp_server_handler()
+        
+        # Bedrock Agent and Action Groups (commented out - not needed for dashboard)
+        # self.bedrock_agent = self._create_bedrock_agent()
+        # self.mcp_action_group = self._create_mcp_action_group()
+        
+        # self.content_generation_handler = self._create_content_generation_handler()
         self.sync_upload_handler = self._create_sync_upload_handler()
         self.sync_download_handler = self._create_sync_download_handler()
         self.educator_handler = self._create_educator_handler()
@@ -82,7 +87,7 @@ class CloudBrainStack(Stack):
 
     def _create_bundles_table(self) -> dynamodb.Table:
         """Create DynamoDB table for bundle metadata."""
-        return dynamodb.Table(
+        table = dynamodb.Table(
             self,
             "BundlesTable",
             table_name=f"sikshya-sathi-bundles-{self.env_name}",
@@ -96,7 +101,21 @@ class CloudBrainStack(Stack):
             removal_policy=RemovalPolicy.RETAIN
             if self.env_name == "production"
             else RemovalPolicy.DESTROY,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True
+            ),
         )
+        
+        # Add GSI to query bundles by studentId
+        table.add_global_secondary_index(
+            index_name="StudentIdIndex",
+            partition_key=dynamodb.Attribute(
+                name="studentId", type=dynamodb.AttributeType.STRING
+            ),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+        
+        return table
 
     def _create_sync_sessions_table(self) -> dynamodb.Table:
         """Create DynamoDB table for sync sessions."""
@@ -127,19 +146,49 @@ class CloudBrainStack(Stack):
         
         return table
 
-    def _create_bundles_bucket(self) -> s3.Bucket:
-        """Create S3 bucket for learning bundles."""
-        return s3.Bucket(
+    def _create_knowledge_model_table(self) -> dynamodb.Table:
+        """Create DynamoDB table for student knowledge models.
+        
+        Stores personalized knowledge models tracking student proficiency,
+        mastery levels, and learning velocity for adaptive content selection.
+        """
+        return dynamodb.Table(
             self,
-            "BundlesBucket",
-            bucket_name=f"sikshya-sathi-bundles-{self.env_name}",
-            encryption=s3.BucketEncryption.S3_MANAGED,
-            versioned=self.env_name == "production",
+            "KnowledgeModelTable",
+            table_name=f"sikshya-sathi-knowledge-models-{self.env_name}",
+            partition_key=dynamodb.Attribute(
+                name="studentId", type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=RemovalPolicy.RETAIN
             if self.env_name == "production"
             else RemovalPolicy.DESTROY,
-            auto_delete_objects=self.env_name != "production",
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True
+            ),
         )
+
+    def _create_bundles_bucket(self) -> s3.Bucket:
+            """Create S3 bucket for learning bundles."""
+            return s3.Bucket(
+                self,
+                "BundlesBucket",
+                bucket_name=f"sikshya-sathi-bundles-{self.env_name}",
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                versioned=True,  # Enable versioning for all environments
+                removal_policy=RemovalPolicy.RETAIN
+                if self.env_name == "production"
+                else RemovalPolicy.DESTROY,
+                auto_delete_objects=self.env_name != "production",
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,  # Block public access
+                lifecycle_rules=[
+                    s3.LifecycleRule(
+                        id="ExpireOldBundles",
+                        enabled=True,
+                        expiration=Duration.days(30),  # 30-day expiration
+                    )
+                ],
+            )
 
     def _create_bedrock_agent_role(self) -> iam.Role:
         """Create IAM role for Bedrock Agent."""
@@ -195,6 +244,351 @@ class CloudBrainStack(Stack):
 
         return role
 
+    def _create_bedrock_agent(self) -> CfnResource:
+        """Create Bedrock Agent for curriculum-aligned content generation.
+        
+        Uses Claude 3.5 Sonnet model with instructions for generating
+        personalized learning materials aligned with Nepal K-12 curriculum.
+        """
+        # Agent instructions for curriculum-aligned content generation
+        agent_instructions = """You are an expert educational content generator for Sikshya-Sathi, creating personalized 
+learning materials for rural Nepali K-12 students (grades 6-8).
+
+Your responsibilities:
+1. Generate lessons aligned with Nepal K-12 curriculum standards
+2. Create quizzes assessing understanding at appropriate Bloom's taxonomy levels
+3. Provide progressive hints guiding students without revealing answers
+4. Use culturally appropriate examples relevant to Nepal
+5. Ensure age-appropriate language and complexity
+6. Support both Nepali and English languages
+7. Incorporate metric system and Nepali currency (NPR) in examples
+
+Before generating content:
+- Query MCP Server for curriculum standards using get_curriculum_standards
+- Review learning objectives and prerequisites
+- Ensure content addresses specified standards
+
+Content structure requirements:
+- Lessons: Include explanation, example, and practice sections
+- Quizzes: Mix question types (multiple-choice, true/false, short-answer)
+- All content: Reference curriculum standard IDs
+
+Always validate your generated content against curriculum standards using the validate_content_alignment tool
+to ensure at least 70% alignment score before finalizing."""
+
+        # Create Bedrock Agent using L1 construct (CfnAgent)
+        agent = CfnResource(
+            self,
+            "BedrockAgent",
+            type="AWS::Bedrock::Agent",
+            properties={
+                "AgentName": f"sikshya-sathi-content-generator-{self.env_name}",
+                "AgentResourceRoleArn": self.bedrock_agent_role.role_arn,
+                "FoundationModel": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "Instruction": agent_instructions,
+                "Description": "Bedrock Agent for generating curriculum-aligned educational content for Sikshya-Sathi",
+                "IdleSessionTTLInSeconds": 600,  # 10 minutes
+                "PrepareAgent": True,  # Automatically prepare the agent
+            },
+        )
+        
+        return agent
+
+    def _create_mcp_action_group(self) -> CfnResource:
+        """Create action group connecting Bedrock Agent to MCP Server Lambda.
+        
+        Exposes four MCP tools:
+        - get_curriculum_standards: Query standards by grade and subject
+        - get_topic_details: Get detailed topic information
+        - validate_content_alignment: Validate content against standards
+        - get_learning_progression: Get topic sequence and dependencies
+        """
+        # Grant Bedrock Agent permission to invoke MCP Server Lambda
+        self.mcp_server_handler.grant_invoke(self.bedrock_agent_role)
+        
+        # Define API schema for the action group
+        # This describes the four MCP tools that Bedrock Agent can call
+        api_schema = {
+            "openapi": "3.0.0",
+            "info": {
+                "title": "MCP Server Curriculum Tools API",
+                "version": "1.0.0",
+                "description": "API for accessing Nepal K-12 curriculum data and validation tools"
+            },
+            "paths": {
+                "/get_curriculum_standards": {
+                    "post": {
+                        "summary": "Get curriculum standards for a specific grade and subject",
+                        "description": "Returns all curriculum standards with learning objectives, prerequisites, Bloom level, and estimated hours",
+                        "operationId": "getCurriculumStandards",
+                        "requestBody": {
+                            "required": True,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "grade": {
+                                                "type": "integer",
+                                                "description": "Grade level (6-8)",
+                                                "minimum": 6,
+                                                "maximum": 8
+                                            },
+                                            "subject": {
+                                                "type": "string",
+                                                "description": "Subject name",
+                                                "enum": ["Mathematics", "Science", "Social Studies"]
+                                            }
+                                        },
+                                        "required": ["grade", "subject"]
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "List of curriculum standards",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/get_topic_details": {
+                    "post": {
+                        "summary": "Get comprehensive information about a specific curriculum topic",
+                        "description": "Returns detailed topic information including assessment criteria, subtopics, and resources",
+                        "operationId": "getTopicDetails",
+                        "requestBody": {
+                            "required": True,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "topic_id": {
+                                                "type": "string",
+                                                "description": "Unique topic identifier (e.g., MATH-6-001)"
+                                            }
+                                        },
+                                        "required": ["topic_id"]
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "Topic details",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/validate_content_alignment": {
+                    "post": {
+                        "summary": "Validate generated content alignment with curriculum standards",
+                        "description": "Returns alignment score, matched standards, gaps, and recommendations",
+                        "operationId": "validateContentAlignment",
+                        "requestBody": {
+                            "required": True,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "content": {
+                                                "type": "string",
+                                                "description": "Generated lesson or quiz content"
+                                            },
+                                            "target_standards": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                },
+                                                "description": "List of target standard IDs"
+                                            }
+                                        },
+                                        "required": ["content", "target_standards"]
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "Content alignment result",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "alignment_score": {
+                                                    "type": "number"
+                                                },
+                                                "matched_standards": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                },
+                                                "gaps": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                },
+                                                "recommendations": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/get_learning_progression": {
+                    "post": {
+                        "summary": "Get learning progression showing topic sequence and dependencies",
+                        "description": "Returns topic sequence, dependencies, and difficulty progression for a subject and grade range",
+                        "operationId": "getLearningProgression",
+                        "requestBody": {
+                            "required": True,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "subject": {
+                                                "type": "string",
+                                                "description": "Subject name",
+                                                "enum": ["Mathematics", "Science", "Social Studies"]
+                                            },
+                                            "grade_start": {
+                                                "type": "integer",
+                                                "description": "Starting grade",
+                                                "minimum": 6,
+                                                "maximum": 8
+                                            },
+                                            "grade_end": {
+                                                "type": "integer",
+                                                "description": "Ending grade",
+                                                "minimum": 6,
+                                                "maximum": 8
+                                            }
+                                        },
+                                        "required": ["subject", "grade_start", "grade_end"]
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "Learning progression",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        # Create action group using L1 construct (CfnAgentActionGroup)
+        action_group = CfnResource(
+            self,
+            "MCPActionGroup",
+            type="AWS::Bedrock::AgentActionGroup",
+            properties={
+                "ActionGroupName": "mcp-curriculum-tools",
+                "AgentId": self.bedrock_agent.get_att("AgentId").to_string(),
+                "AgentVersion": "DRAFT",
+                "Description": "Action group for accessing MCP Server curriculum tools",
+                "ActionGroupExecutor": {
+                    "Lambda": self.mcp_server_handler.function_arn
+                },
+                "ApiSchema": {
+                    "Payload": str(api_schema)
+                },
+                "ActionGroupState": "ENABLED",
+            },
+        )
+        
+        # Ensure action group is created after agent
+        action_group.node.add_dependency(self.bedrock_agent)
+        
+        return action_group
+
+    def _create_mcp_server_handler(self) -> lambda_.Function:
+        """Create Lambda function for MCP Server.
+        
+        The MCP Server provides curriculum data and validation tools
+        for content generation via Bedrock Agent.
+        """
+        handler = lambda_.Function(
+            self,
+            "MCPServerHandler",
+            function_name=f"sikshya-sathi-mcp-server-{self.env_name}",
+            runtime=lambda_.Runtime.PYTHON_3_11,
+            handler="src.mcp.server.lambda_handler",
+            code=lambda_.Code.from_asset(
+                "..",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_11.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install --platform manylinux2014_x86_64 --only-binary=:all: -r src/requirements.txt -t /asset-output && "
+                        "cp -r src /asset-output/",
+                    ],
+                    output_type=BundlingOutput.AUTO_DISCOVER,
+                ),
+            ),
+            timeout=Duration.seconds(30),
+            memory_size=1024,
+            architecture=lambda_.Architecture.X86_64,
+            environment={
+                "ENVIRONMENT": self.env_name,
+                "CURRICULUM_DATA_PATH": "/var/task/src/mcp/data",
+                "POWERTOOLS_SERVICE_NAME": "mcp-server",
+                "POWERTOOLS_METRICS_NAMESPACE": "SikshyaSathi/CloudBrain",
+                "LOG_LEVEL": "INFO" if self.env_name == "production" else "DEBUG",
+            },
+        )
+
+        # Grant CloudWatch metrics permissions
+        handler.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+            )
+        )
+
+        return handler
+
     def _create_content_generation_handler(self) -> lambda_.Function:
         """Create Lambda function for content generation."""
         handler = lambda_.Function(
@@ -223,8 +617,10 @@ class CloudBrainStack(Stack):
                 "ENVIRONMENT": self.env_name,
                 "STUDENTS_TABLE": self.students_table.table_name,
                 "BUNDLES_TABLE": self.bundles_table.table_name,
+                "KNOWLEDGE_MODEL_TABLE": self.knowledge_model_table.table_name,
                 "BUNDLES_BUCKET": self.bundles_bucket.bucket_name,
                 "BEDROCK_AGENT_ROLE_ARN": self.bedrock_agent_role.role_arn,
+                "BEDROCK_AGENT_ID": self.bedrock_agent.get_att("AgentId").to_string(),
                 "POWERTOOLS_SERVICE_NAME": "content-generation",
                 "POWERTOOLS_METRICS_NAMESPACE": "SikshyaSathi/CloudBrain",
                 "LOG_LEVEL": "INFO" if self.env_name == "production" else "DEBUG",
@@ -234,6 +630,7 @@ class CloudBrainStack(Stack):
         # Grant permissions
         self.students_table.grant_read_write_data(handler)
         self.bundles_table.grant_read_write_data(handler)
+        self.knowledge_model_table.grant_read_write_data(handler)
         self.bundles_bucket.grant_read_write(handler)
 
         # Grant Bedrock Agent invocation permissions
@@ -267,16 +664,16 @@ class CloudBrainStack(Stack):
             "SyncUploadHandler",
             function_name=f"sikshya-sathi-sync-upload-{self.env_name}",
             runtime=lambda_.Runtime.PYTHON_3_11,
-            handler="handlers.sync_handler.upload",
+            handler="src.handlers.sync_handler.upload",
             code=lambda_.Code.from_asset(
-                "../src",
+                "..",
                 bundling=BundlingOptions(
                     image=lambda_.Runtime.PYTHON_3_11.bundling_image,
                     command=[
                         "bash",
                         "-c",
-                        "pip install --platform manylinux2014_x86_64 --only-binary=:all: -r requirements.txt -t /asset-output && "
-                        "cp -r . /asset-output",
+                        "pip install --platform manylinux2014_x86_64 --only-binary=:all: -r src/requirements.txt -t /asset-output && "
+                        "cp -r src /asset-output/",
                     ],
                     output_type=BundlingOutput.AUTO_DISCOVER,
                 ),
@@ -289,6 +686,7 @@ class CloudBrainStack(Stack):
                 "STUDENTS_TABLE": self.students_table.table_name,
                 "BUNDLES_TABLE": self.bundles_table.table_name,
                 "SYNC_SESSIONS_TABLE": self.sync_sessions_table.table_name,
+                "KNOWLEDGE_MODEL_TABLE": self.knowledge_model_table.table_name,
                 "BUNDLES_BUCKET": self.bundles_bucket.bucket_name,
                 "JWT_SECRET": "dev-secret-change-in-production",  # TODO: Use Secrets Manager
                 "POWERTOOLS_SERVICE_NAME": "sync-upload",
@@ -301,6 +699,7 @@ class CloudBrainStack(Stack):
         self.students_table.grant_read_write_data(handler)
         self.bundles_table.grant_read_write_data(handler)
         self.sync_sessions_table.grant_read_write_data(handler)
+        self.knowledge_model_table.grant_read_write_data(handler)
         
         # Grant CloudWatch metrics permissions
         handler.add_to_role_policy(
@@ -320,16 +719,16 @@ class CloudBrainStack(Stack):
             "SyncDownloadHandler",
             function_name=f"sikshya-sathi-sync-download-{self.env_name}",
             runtime=lambda_.Runtime.PYTHON_3_11,
-            handler="handlers.sync_handler.download",
+            handler="src.handlers.sync_handler.download",
             code=lambda_.Code.from_asset(
-                "../src",
+                "..",
                 bundling=BundlingOptions(
                     image=lambda_.Runtime.PYTHON_3_11.bundling_image,
                     command=[
                         "bash",
                         "-c",
-                        "pip install --platform manylinux2014_x86_64 --only-binary=:all: -r requirements.txt -t /asset-output && "
-                        "cp -r . /asset-output",
+                        "pip install --platform manylinux2014_x86_64 --only-binary=:all: -r src/requirements.txt -t /asset-output && "
+                        "cp -r src /asset-output/",
                     ],
                     output_type=BundlingOutput.AUTO_DISCOVER,
                 ),
@@ -342,9 +741,9 @@ class CloudBrainStack(Stack):
                 "STUDENTS_TABLE": self.students_table.table_name,
                 "BUNDLES_TABLE": self.bundles_table.table_name,
                 "SYNC_SESSIONS_TABLE": self.sync_sessions_table.table_name,
+                "KNOWLEDGE_MODEL_TABLE": self.knowledge_model_table.table_name,
                 "BUNDLES_BUCKET": self.bundles_bucket.bucket_name,
                 "JWT_SECRET": "dev-secret-change-in-production",  # TODO: Use Secrets Manager
-                "BEDROCK_AGENT_ROLE_ARN": self.bedrock_agent_role.role_arn,
                 "POWERTOOLS_SERVICE_NAME": "sync-download",
                 "POWERTOOLS_METRICS_NAMESPACE": "SikshyaSathi/CloudBrain",
                 "LOG_LEVEL": "INFO" if self.env_name == "production" else "DEBUG",
@@ -355,20 +754,8 @@ class CloudBrainStack(Stack):
         self.students_table.grant_read_write_data(handler)
         self.bundles_table.grant_read_write_data(handler)
         self.sync_sessions_table.grant_read_write_data(handler)
+        self.knowledge_model_table.grant_read_write_data(handler)
         self.bundles_bucket.grant_read_write(handler)
-        
-        # Grant Bedrock Agent invocation permissions
-        handler.add_to_role_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=[
-                    "bedrock-agent-runtime:InvokeAgent",
-                    "bedrock-agent:GetAgent",
-                    "bedrock-agent:ListAgents",
-                ],
-                resources=["*"],
-            )
-        )
         
         # Grant CloudWatch metrics permissions
         handler.add_to_role_policy(
@@ -492,18 +879,21 @@ class CloudBrainStack(Stack):
                 stage_name=self.env_name,
                 throttling_rate_limit=100,
                 throttling_burst_limit=200,
+                logging_level=apigw.MethodLoggingLevel.INFO,
+                data_trace_enabled=True,
             ),
             default_cors_preflight_options=apigw.CorsOptions(
                 allow_origins=apigw.Cors.ALL_ORIGINS,
                 allow_methods=apigw.Cors.ALL_METHODS,
-                allow_headers=["Content-Type", "Authorization"],
+                allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+                max_age=Duration.hours(1),
             ),
         )
 
-        # /sync resource
+        # /sync resource - enables mobile app sync functionality
         sync = api.root.add_resource("sync")
 
-        # POST /sync/upload
+        # POST /sync/upload - Upload performance logs and trigger bundle generation
         upload = sync.add_resource("upload")
         upload.add_method(
             "POST",
@@ -520,7 +910,7 @@ class CloudBrainStack(Stack):
             ),
         )
 
-        # GET /sync/download/{sessionId}
+        # GET /sync/download/{sessionId} - Download personalized learning bundle
         download = sync.add_resource("download")
         session = download.add_resource("{sessionId}")
         session.add_method(
@@ -586,8 +976,8 @@ class CloudBrainStack(Stack):
         )
         
         # GET /educator/students
-        students = educator.add_resource("students")
-        students.add_method(
+        educator_students = educator.add_resource("students")
+        educator_students.add_method(
             "GET",
             apigw.LambdaIntegration(
                 self.educator_handler,
@@ -690,122 +1080,123 @@ class CloudBrainStack(Stack):
         """Create CloudWatch alarms for critical errors and performance."""
         namespace = "SikshyaSathi/CloudBrain"
         
-        # Alarm for content generation latency (p95 > 60 seconds)
-        content_gen_latency_alarm = cloudwatch.Alarm(
-            self,
-            "ContentGenerationLatencyAlarm",
-            alarm_name=f"sikshya-sathi-content-gen-latency-{self.env_name}",
-            alarm_description="Content generation latency exceeds 60 seconds (p95)",
-            metric=cloudwatch.Metric(
-                namespace=namespace,
-                metric_name="ContentGenerationLatency",
-                statistic="p95",
-                period=Duration.minutes(5),
-            ),
-            threshold=60000,  # 60 seconds in milliseconds
-            evaluation_periods=2,
-            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        content_gen_latency_alarm.add_alarm_action(
-            cw_actions.SnsAction(self.alarm_topic)
-        )
+        # Alarms for disabled handlers - commented out
+        # # Alarm for content generation latency (p95 > 60 seconds)
+        # content_gen_latency_alarm = cloudwatch.Alarm(
+        #     self,
+        #     "ContentGenerationLatencyAlarm",
+        #     alarm_name=f"sikshya-sathi-content-gen-latency-{self.env_name}",
+        #     alarm_description="Content generation latency exceeds 60 seconds (p95)",
+        #     metric=cloudwatch.Metric(
+        #         namespace=namespace,
+        #         metric_name="ContentGenerationLatency",
+        #         statistic="p95",
+        #         period=Duration.minutes(5),
+        #     ),
+        #     threshold=60000,  # 60 seconds in milliseconds
+        #     evaluation_periods=2,
+        #     comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        #     treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        # )
+        # content_gen_latency_alarm.add_alarm_action(
+        #     cw_actions.SnsAction(self.alarm_topic)
+        # )
         
-        # Alarm for validation success rate (< 95%)
-        validation_success_alarm = cloudwatch.Alarm(
-            self,
-            "ValidationSuccessRateAlarm",
-            alarm_name=f"sikshya-sathi-validation-success-{self.env_name}",
-            alarm_description="Content validation success rate below 95%",
-            metric=cloudwatch.Metric(
-                namespace=namespace,
-                metric_name="ValidationSuccessRate",
-                statistic="Average",
-                period=Duration.minutes(5),
-            ),
-            threshold=95,
-            evaluation_periods=2,
-            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        validation_success_alarm.add_alarm_action(
-            cw_actions.SnsAction(self.alarm_topic)
-        )
+        # # Alarm for validation success rate (< 95%)
+        # validation_success_alarm = cloudwatch.Alarm(
+        #     self,
+        #     "ValidationSuccessRateAlarm",
+        #     alarm_name=f"sikshya-sathi-validation-success-{self.env_name}",
+        #     alarm_description="Content validation success rate below 95%",
+        #     metric=cloudwatch.Metric(
+        #         namespace=namespace,
+        #         metric_name="ValidationSuccessRate",
+        #         statistic="Average",
+        #         period=Duration.minutes(5),
+        #     ),
+        #     threshold=95,
+        #     evaluation_periods=2,
+        #     comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        #     treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        # )
+        # validation_success_alarm.add_alarm_action(
+        #     cw_actions.SnsAction(self.alarm_topic)
+        # )
         
-        # Alarm for sync completion rate (< 90%)
-        sync_completion_alarm = cloudwatch.Alarm(
-            self,
-            "SyncCompletionRateAlarm",
-            alarm_name=f"sikshya-sathi-sync-completion-{self.env_name}",
-            alarm_description="Sync completion rate below 90%",
-            metric=cloudwatch.Metric(
-                namespace=namespace,
-                metric_name="SyncCompletionRate",
-                statistic="Average",
-                period=Duration.minutes(5),
-            ),
-            threshold=90,
-            evaluation_periods=2,
-            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        sync_completion_alarm.add_alarm_action(
-            cw_actions.SnsAction(self.alarm_topic)
-        )
+        # # Alarm for sync completion rate (< 90%)
+        # sync_completion_alarm = cloudwatch.Alarm(
+        #     self,
+        #     "SyncCompletionRateAlarm",
+        #     alarm_name=f"sikshya-sathi-sync-completion-{self.env_name}",
+        #     alarm_description="Sync completion rate below 90%",
+        #     metric=cloudwatch.Metric(
+        #         namespace=namespace,
+        #         metric_name="SyncCompletionRate",
+        #         statistic="Average",
+        #         period=Duration.minutes(5),
+        #     ),
+        #     threshold=90,
+        #     evaluation_periods=2,
+        #     comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        #     treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        # )
+        # sync_completion_alarm.add_alarm_action(
+        #     cw_actions.SnsAction(self.alarm_topic)
+        # )
         
-        # Alarm for Lambda errors (content generation)
-        content_gen_error_alarm = cloudwatch.Alarm(
-            self,
-            "ContentGenerationErrorAlarm",
-            alarm_name=f"sikshya-sathi-content-gen-errors-{self.env_name}",
-            alarm_description="Content generation Lambda errors",
-            metric=self.content_generation_handler.metric_errors(
-                period=Duration.minutes(5),
-            ),
-            threshold=5,
-            evaluation_periods=1,
-            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        content_gen_error_alarm.add_alarm_action(
-            cw_actions.SnsAction(self.alarm_topic)
-        )
+        # # Alarm for Lambda errors (content generation)
+        # content_gen_error_alarm = cloudwatch.Alarm(
+        #     self,
+        #     "ContentGenerationErrorAlarm",
+        #     alarm_name=f"sikshya-sathi-content-gen-errors-{self.env_name}",
+        #     alarm_description="Content generation Lambda errors",
+        #     metric=self.content_generation_handler.metric_errors(
+        #         period=Duration.minutes(5),
+        #     ),
+        #     threshold=5,
+        #     evaluation_periods=1,
+        #     comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        #     treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        # )
+        # content_gen_error_alarm.add_alarm_action(
+        #     cw_actions.SnsAction(self.alarm_topic)
+        # )
         
-        # Alarm for Lambda errors (sync upload)
-        sync_upload_error_alarm = cloudwatch.Alarm(
-            self,
-            "SyncUploadErrorAlarm",
-            alarm_name=f"sikshya-sathi-sync-upload-errors-{self.env_name}",
-            alarm_description="Sync upload Lambda errors",
-            metric=self.sync_upload_handler.metric_errors(
-                period=Duration.minutes(5),
-            ),
-            threshold=5,
-            evaluation_periods=1,
-            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        sync_upload_error_alarm.add_alarm_action(
-            cw_actions.SnsAction(self.alarm_topic)
-        )
+        # # Alarm for Lambda errors (sync upload)
+        # sync_upload_error_alarm = cloudwatch.Alarm(
+        #     self,
+        #     "SyncUploadErrorAlarm",
+        #     alarm_name=f"sikshya-sathi-sync-upload-errors-{self.env_name}",
+        #     alarm_description="Sync upload Lambda errors",
+        #     metric=self.sync_upload_handler.metric_errors(
+        #         period=Duration.minutes(5),
+        #     ),
+        #     threshold=5,
+        #     evaluation_periods=1,
+        #     comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        #     treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        # )
+        # sync_upload_error_alarm.add_alarm_action(
+        #     cw_actions.SnsAction(self.alarm_topic)
+        # )
         
-        # Alarm for Lambda errors (sync download)
-        sync_download_error_alarm = cloudwatch.Alarm(
-            self,
-            "SyncDownloadErrorAlarm",
-            alarm_name=f"sikshya-sathi-sync-download-errors-{self.env_name}",
-            alarm_description="Sync download Lambda errors",
-            metric=self.sync_download_handler.metric_errors(
-                period=Duration.minutes(5),
-            ),
-            threshold=5,
-            evaluation_periods=1,
-            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-        )
-        sync_download_error_alarm.add_alarm_action(
-            cw_actions.SnsAction(self.alarm_topic)
-        )
+        # # Alarm for Lambda errors (sync download)
+        # sync_download_error_alarm = cloudwatch.Alarm(
+        #     self,
+        #     "SyncDownloadErrorAlarm",
+        #     alarm_name=f"sikshya-sathi-sync-download-errors-{self.env_name}",
+        #     alarm_description="Sync download Lambda errors",
+        #     metric=self.sync_download_handler.metric_errors(
+        #         period=Duration.minutes(5),
+        #     ),
+        #     threshold=5,
+        #     evaluation_periods=1,
+        #     comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        #     treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        # )
+        # sync_download_error_alarm.add_alarm_action(
+        #     cw_actions.SnsAction(self.alarm_topic)
+        # )
         
         # Alarm for DynamoDB students table throttling
         students_table_throttle_alarm = cloudwatch.Alarm(
@@ -896,13 +1287,38 @@ class CloudBrainStack(Stack):
 
     def _create_outputs(self) -> None:
         """Create CloudFormation outputs."""
-        CfnOutput(
-            self,
-            "BedrockAgentRoleArn",
-            value=self.bedrock_agent_role.role_arn,
-            description="IAM Role ARN for Bedrock Agent",
-            export_name=f"sikshya-sathi-bedrock-role-{self.env_name}",
-        )
+        # Bedrock outputs commented out - not needed for dashboard
+        # CfnOutput(
+        #     self,
+        #     "MCPServerLambdaArn",
+        #     value=self.mcp_server_handler.function_arn,
+        #     description="Lambda function ARN for MCP Server",
+        #     export_name=f"sikshya-sathi-mcp-server-arn-{self.env_name}",
+        # )
+
+        # CfnOutput(
+        #     self,
+        #     "BedrockAgentRoleArn",
+        #     value=self.bedrock_agent_role.role_arn,
+        #     description="IAM Role ARN for Bedrock Agent",
+        #     export_name=f"sikshya-sathi-bedrock-role-{self.env_name}",
+        # )
+        
+        # CfnOutput(
+        #     self,
+        #     "BedrockAgentId",
+        #     value=self.bedrock_agent.get_att("AgentId").to_string(),
+        #     description="Bedrock Agent ID for content generation",
+        #     export_name=f"sikshya-sathi-bedrock-agent-id-{self.env_name}",
+        # )
+        
+        # CfnOutput(
+        #     self,
+        #     "BedrockAgentArn",
+        #     value=self.bedrock_agent.get_att("AgentArn").to_string(),
+        #     description="Bedrock Agent ARN for content generation",
+        #     export_name=f"sikshya-sathi-bedrock-agent-arn-{self.env_name}",
+        # )
 
         CfnOutput(
             self,

@@ -13,6 +13,7 @@ from src.models.validation import (
     ValidationResult,
     ValidationStatus,
 )
+from src.services.mcp_error_handler import validate_content_alignment_with_fallback
 from src.utils.error_handling import handle_mcp_error, RetryableError
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,8 @@ class CurriculumValidator:
         """Check if content aligns with curriculum standards via MCP Server.
         
         Handles MCP Server unavailability by using cached data and flagging for review.
+        Implements exponential backoff retry (1s, 2s, 4s) and uses cached curriculum
+        data after 3 failed retries.
         
         Args:
             content: Content to validate
@@ -166,9 +169,14 @@ class CurriculumValidator:
             Dict with passed status, score, and issues
         """
         try:
-            # Call MCP Server for alignment validation
-            alignment = self.mcp_server.validate_content_alignment(
-                content, target_standards
+            # Call MCP Server with retry and cache fallback
+            # This will automatically retry 3 times with exponential backoff
+            # and fall back to cached data if MCP Server is unavailable
+            alignment = validate_content_alignment_with_fallback(
+                self.mcp_server,
+                content,
+                target_standards,
+                content_id=None,  # Will be set by caller if needed
             )
             
             passed = alignment.aligned and alignment.alignment_score >= self.alignment_threshold
@@ -204,13 +212,29 @@ class CurriculumValidator:
                 "issues": issues,
             }
             
+        except RetryableError as e:
+            # MCP Server unavailable after retries and no cached data
+            logger.error(f"Curriculum alignment check failed after retries: {e}")
+            
+            return {
+                "passed": False,
+                "score": 0.0,
+                "issues": [
+                    ValidationIssue(
+                        check_type=ValidationCheckType.CURRICULUM_ALIGNMENT,
+                        severity="critical",
+                        message=f"MCP Server unavailable and no cached data: {e.error_code}",
+                        suggestion="Cannot validate curriculum alignment. Retry later.",
+                    )
+                ],
+            }
         except Exception as e:
-            logger.error(f"Curriculum alignment check failed: {e}")
+            logger.error(f"Unexpected error in curriculum alignment check: {e}")
             error_response = handle_mcp_error(e)
             
-            # MCP Server unavailable - use cached data and flag for manual review
+            # Unexpected error - allow content to pass but flag for manual review
             logger.warning(
-                "MCP Server unavailable. Using cached curriculum data. "
+                "Unexpected error in curriculum alignment check. "
                 "Content flagged for manual review."
             )
             
@@ -221,8 +245,8 @@ class CurriculumValidator:
                     ValidationIssue(
                         check_type=ValidationCheckType.CURRICULUM_ALIGNMENT,
                         severity="low",
-                        message=f"MCP Server unavailable: {error_response.message}",
-                        suggestion="Content approved with cached data. Manual review recommended.",
+                        message=f"Alignment check error: {error_response.message}",
+                        suggestion="Content approved with error. Manual review recommended.",
                     )
                 ],
             }

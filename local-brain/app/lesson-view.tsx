@@ -12,16 +12,16 @@ import { Lesson } from '@/src/models';
 export default function LessonViewScreen() {
   const router = useRouter();
   const { lessonId } = useLocalSearchParams<{ lessonId: string }>();
-  const { contentService, performanceService, studentId } = useApp();
+  const { dbManager, performanceService, studentId } = useApp();
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [loading, setLoading] = useState(true);
   const [startTime] = useState(Date.now());
 
   useEffect(() => {
-    if (lessonId && contentService && performanceService) {
+    if (lessonId && dbManager && performanceService) {
       loadLesson();
     }
-  }, [lessonId, contentService, performanceService]);
+  }, [lessonId, dbManager, performanceService]);
 
   const loadLesson = async () => {
     if (!studentId) {
@@ -32,8 +32,9 @@ export default function LessonViewScreen() {
     }
 
     try {
-      const lessonData = await contentService!.getLessonById(lessonId);
-      if (lessonData) {
+      const lessonRow = await dbManager!.lessonRepository.findById(lessonId);
+      if (lessonRow) {
+        const lessonData = dbManager!.lessonRepository.parseLesson(lessonRow);
         setLesson(lessonData);
         
         // Track lesson start

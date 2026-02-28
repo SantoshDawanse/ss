@@ -4,8 +4,8 @@ import os
 
 # Bedrock Agent Configuration
 BEDROCK_AGENT_NAME = "sikshya-sathi-content-generator"
-# Use Claude 3 Sonnet - stable version available in us-east-1
-BEDROCK_FOUNDATION_MODEL = "anthropic.claude-3-sonnet-20240229-v1:0"
+# Use Claude 3.5 Sonnet as specified in requirements
+BEDROCK_FOUNDATION_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0"
 BEDROCK_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 # Agent Instructions

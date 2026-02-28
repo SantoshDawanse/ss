@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from src.models.student import StudentRegistrationRequest, StudentRegistrationResponse
 from src.repositories.student_repository import StudentRepository
+from src.utils.auth import generate_jwt_token
 
 
 # UUID v4 validation pattern from design document
@@ -183,19 +184,27 @@ def register(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         if existing_student:
             # Student already exists - return 200 (idempotent)
+            # Generate JWT token for authentication
+            auth_token = generate_jwt_token(existing_student.student_id)
+            
             response = StudentRegistrationResponse(
                 student_id=existing_student.student_id,
                 student_name=existing_student.student_name,
                 registration_timestamp=existing_student.registration_timestamp,
                 status="already_registered"
             )
-            return _create_response(200, response.model_dump(mode='json'))
+            response_body = response.model_dump(mode='json')
+            response_body['authToken'] = auth_token
+            return _create_response(200, response_body)
         
         # Create new student
         student = repository.create_student(
             student_id=request.student_id,
             student_name=request.student_name
         )
+        
+        # Generate JWT token for authentication
+        auth_token = generate_jwt_token(student.student_id)
         
         # Return 201 Created
         response = StudentRegistrationResponse(
@@ -204,7 +213,9 @@ def register(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             registration_timestamp=student.registration_timestamp,
             status="registered"
         )
-        return _create_response(201, response.model_dump(mode='json'))
+        response_body = response.model_dump(mode='json')
+        response_body['authToken'] = auth_token
+        return _create_response(201, response_body)
         
     except ClientError as e:
         # DynamoDB error - return 503 Service Unavailable

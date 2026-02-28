@@ -352,6 +352,13 @@ export class StudentProfileService {
           if (response.status === 201 || response.status === 200) {
             const data = await response.json();
             console.log('Registration successful:', data.status);
+            
+            // Store auth token if provided
+            if (data.authToken) {
+              await SecureStore.setItemAsync('authToken', data.authToken);
+              console.log('Auth token stored securely');
+            }
+            
             return;
           }
 

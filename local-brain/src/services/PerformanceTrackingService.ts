@@ -273,6 +273,19 @@ export class PerformanceTrackingService {
   }
 
   /**
+   * Get all logs for a student.
+   */
+  public async getAllLogs(studentId: string): Promise<PerformanceLog[]> {
+    try {
+      const rows = await this.dbManager.performanceLogRepository.findByStudent(studentId);
+      return rows.map(row => this.dbManager.performanceLogRepository.parseLog(row));
+    } catch (error) {
+      console.error('Failed to get all logs:', error);
+      throw new Error(`Failed to retrieve logs: ${error}`);
+    }
+  }
+
+  /**
    * Count unsynced logs.
    */
   public async countUnsyncedLogs(): Promise<number> {

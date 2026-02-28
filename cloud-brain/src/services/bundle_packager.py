@@ -1,6 +1,5 @@
 """Learning bundle packaging service with compression and signing."""
 
-import brotli
 import gzip
 import hashlib
 import json
@@ -87,7 +86,7 @@ class BundlePackager:
 
     def compress_bundle(self, bundle: LearningBundle) -> bytes:
         """
-        Compress bundle content using brotli.
+        Compress bundle content using gzip.
 
         Args:
             bundle: Learning bundle to compress
@@ -99,8 +98,8 @@ class BundlePackager:
         bundle_json = bundle.model_dump_json()
         bundle_bytes = bundle_json.encode("utf-8")
 
-        # Compress with brotli (better compression than gzip for text)
-        compressed = brotli.compress(bundle_bytes, quality=11)
+        # Compress with gzip (as specified in design document)
+        compressed = gzip.compress(bundle_bytes, compresslevel=9)
 
         return compressed
 
@@ -227,8 +226,8 @@ class BundlePackager:
             ValueError: If decompression or parsing fails
         """
         try:
-            # Decompress with brotli
-            decompressed = brotli.decompress(compressed_data)
+            # Decompress with gzip
+            decompressed = gzip.decompress(compressed_data)
 
             # Parse JSON
             bundle_json = decompressed.decode("utf-8")

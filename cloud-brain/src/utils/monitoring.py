@@ -15,10 +15,16 @@ class MetricName(str, Enum):
     """CloudWatch metric names."""
     
     CONTENT_GENERATION_LATENCY = "ContentGenerationLatency"
+    CONTENT_GENERATION_SUCCESS_RATE = "ContentGenerationSuccessRate"
     VALIDATION_SUCCESS_RATE = "ValidationSuccessRate"
-    SYNC_COMPLETION_RATE = "SyncCompletionRate"
+    VALIDATION_PASS_RATE = "ValidationPassRate"
+    MCP_SERVER_AVAILABILITY = "MCPServerAvailability"
+    MCP_SERVER_ERROR_COUNT = "MCPServerErrorCount"
     BUNDLE_GENERATION_LATENCY = "BundleGenerationLatency"
+    BUNDLE_GENERATION_SUCCESS_RATE = "BundleGenerationSuccessRate"
+    SYNC_COMPLETION_RATE = "SyncCompletionRate"
     KNOWLEDGE_MODEL_UPDATE_LATENCY = "KnowledgeModelUpdateLatency"
+    AVERAGE_GENERATION_TIME = "AverageGenerationTime"
 
 
 class MetricUnit(str, Enum):
@@ -149,6 +155,186 @@ class MonitoringService:
             unit=MetricUnit.COUNT,
             dimensions=dimensions,
         )
+    
+    def emit_content_generation_metrics(
+        self,
+        latency_ms: float,
+        success: bool,
+        content_type: str,  # "lesson" or "quiz"
+        subject: Optional[str] = None,
+    ) -> None:
+        """
+        Emit content generation metrics including latency and success rate.
+        
+        Validates: Requirements 12.6, 15.6
+        
+        Args:
+            latency_ms: Generation latency in milliseconds
+            success: Whether generation succeeded
+            content_type: Type of content (lesson or quiz)
+            subject: Optional subject for dimensions
+        """
+        dimensions = {"ContentType": content_type}
+        if subject:
+            dimensions["Subject"] = subject
+        
+        # Emit latency (for p50, p95, p99 percentiles)
+        self.put_metric(
+            metric_name=MetricName.CONTENT_GENERATION_LATENCY,
+            value=latency_ms,
+            unit=MetricUnit.MILLISECONDS,
+            dimensions=dimensions,
+        )
+        
+        # Emit success rate
+        self.record_success(
+            metric_name=MetricName.CONTENT_GENERATION_SUCCESS_RATE,
+            success=success,
+            dimensions=dimensions,
+        )
+        
+        # Emit average generation time (same as latency but for tracking)
+        self.put_metric(
+            metric_name=MetricName.AVERAGE_GENERATION_TIME,
+            value=latency_ms,
+            unit=MetricUnit.MILLISECONDS,
+            dimensions=dimensions,
+        )
+    
+    def emit_validation_metrics(
+        self,
+        passed: bool,
+        content_type: str,
+        alignment_score: Optional[float] = None,
+    ) -> None:
+        """
+        Emit validation pass rate metrics.
+        
+        Validates: Requirements 15.6
+        
+        Args:
+            passed: Whether validation passed
+            content_type: Type of content (lesson or quiz)
+            alignment_score: Optional curriculum alignment score
+        """
+        dimensions = {"ContentType": content_type}
+        
+        # Emit validation pass rate
+        self.record_success(
+            metric_name=MetricName.VALIDATION_PASS_RATE,
+            success=passed,
+            dimensions=dimensions,
+        )
+        
+        # Emit alignment score if provided
+        if alignment_score is not None:
+            self.put_metric(
+                metric_name=MetricName.VALIDATION_SUCCESS_RATE,
+                value=alignment_score * 100,  # Convert to percentage
+                unit=MetricUnit.PERCENT,
+                dimensions=dimensions,
+            )
+    
+    def emit_mcp_server_availability(
+        self,
+        available: bool,
+        tool_name: Optional[str] = None,
+    ) -> None:
+        """
+        Emit MCP Server availability metrics.
+        
+        Validates: Requirements 15.6
+        
+        Args:
+            available: Whether MCP Server is available
+            tool_name: Optional MCP tool name
+        """
+        dimensions = {}
+        if tool_name:
+            dimensions["ToolName"] = tool_name
+        
+        # Emit availability as percentage (100% or 0%)
+        self.put_metric(
+            metric_name=MetricName.MCP_SERVER_AVAILABILITY,
+            value=100.0 if available else 0.0,
+            unit=MetricUnit.PERCENT,
+            dimensions=dimensions,
+        )
+    
+    def emit_mcp_server_error(
+        self,
+        error_type: str,
+        tool_name: Optional[str] = None,
+    ) -> None:
+        """
+        Emit MCP Server error count.
+        
+        Args:
+            error_type: Type of error (unavailable, timeout, invalid_data)
+            tool_name: Optional MCP tool name
+        """
+        dimensions = {"ErrorType": error_type}
+        if tool_name:
+            dimensions["ToolName"] = tool_name
+        
+        # Increment error count
+        self.record_count(
+            metric_name=MetricName.MCP_SERVER_ERROR_COUNT,
+            count=1,
+            dimensions=dimensions,
+        )
+    
+    def emit_bundle_generation_metrics(
+        self,
+        latency_ms: float,
+        success: bool,
+        size_bytes: Optional[int] = None,
+        content_count: Optional[int] = None,
+    ) -> None:
+        """
+        Emit bundle generation metrics including latency and success rate.
+        
+        Validates: Requirements 15.6
+        
+        Args:
+            latency_ms: Generation latency in milliseconds
+            success: Whether generation succeeded
+            size_bytes: Optional bundle size in bytes
+            content_count: Optional number of content items
+        """
+        dimensions = {}
+        
+        # Emit latency
+        self.put_metric(
+            metric_name=MetricName.BUNDLE_GENERATION_LATENCY,
+            value=latency_ms,
+            unit=MetricUnit.MILLISECONDS,
+            dimensions=dimensions,
+        )
+        
+        # Emit success rate
+        self.record_success(
+            metric_name=MetricName.BUNDLE_GENERATION_SUCCESS_RATE,
+            success=success,
+            dimensions=dimensions,
+        )
+        
+        # Emit size if provided
+        if size_bytes is not None:
+            self.put_metric(
+                metric_name=MetricName("BundleSize"),
+                value=float(size_bytes),
+                unit=MetricUnit.BYTES,
+                dimensions=dimensions,
+            )
+        
+        # Emit content count if provided
+        if content_count is not None:
+            self.record_count(
+                metric_name=MetricName("BundleContentCount"),
+                count=content_count,
+                dimensions=dimensions,
+            )
 
 
 class LatencyTimer:

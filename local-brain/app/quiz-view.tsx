@@ -14,7 +14,7 @@ import { QuizFeedback } from '@/src/services';
 export default function QuizViewScreen() {
   const router = useRouter();
   const { quizId } = useLocalSearchParams<{ quizId: string }>();
-  const { contentService, performanceService, studentId } = useApp();
+  const { dbManager, performanceService, studentId } = useApp();
   
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [loading, setLoading] = useState(true);
@@ -25,17 +25,18 @@ export default function QuizViewScreen() {
   const [startTime] = useState(Date.now());
 
   useEffect(() => {
-    if (quizId && contentService && performanceService && studentId) {
+    if (quizId && dbManager && performanceService && studentId) {
       loadQuiz();
     }
-  }, [quizId, contentService, performanceService, studentId]);
+  }, [quizId, dbManager, performanceService, studentId]);
 
   const loadQuiz = async () => {
     if (!studentId) return;
     
     try {
-      const quizData = await contentService!.getQuizById(quizId);
-      if (quizData) {
+      const quizRow = await dbManager!.quizRepository.findById(quizId);
+      if (quizRow) {
+        const quizData = dbManager!.quizRepository.parseQuiz(quizRow);
         setQuiz(quizData);
         
         // Track quiz start
@@ -55,18 +56,20 @@ export default function QuizViewScreen() {
   };
 
   const handleAnswerSubmit = async (questionId: string, answer: string) => {
-    if (!quiz || !contentService || !performanceService || !studentId) return;
+    if (!quiz || !dbManager || !performanceService || !studentId) return;
 
     const currentQuestion = quiz.questions[currentQuestionIndex];
     
     try {
-      // Validate answer
-      const result = await contentService.validateAnswer(
-        quizId,
-        questionId,
-        answer,
-        hintsUsed
-      );
+      // Validate answer locally
+      const correct = isAnswerCorrect(answer, currentQuestion.correctAnswer, currentQuestion.type);
+
+      const result: QuizFeedback = {
+        correct,
+        explanation: currentQuestion.explanation,
+        nextHintLevel: !correct && hintsUsed < 3 ? hintsUsed + 1 : undefined,
+        encouragement: generateEncouragement(correct, hintsUsed),
+      };
 
       setFeedback(result);
 
@@ -87,17 +90,67 @@ export default function QuizViewScreen() {
     }
   };
 
+  const isAnswerCorrect = (
+    userAnswer: string,
+    correctAnswer: string,
+    questionType: string
+  ): boolean => {
+    const normalizedUser = userAnswer.trim().toLowerCase();
+    const normalizedCorrect = correctAnswer.trim().toLowerCase();
+
+    switch (questionType) {
+      case 'multiple_choice':
+      case 'true_false':
+        return normalizedUser === normalizedCorrect;
+      
+      case 'short_answer':
+        return (
+          normalizedUser === normalizedCorrect ||
+          normalizedUser.includes(normalizedCorrect) ||
+          normalizedCorrect.includes(normalizedUser)
+        );
+      
+      default:
+        return normalizedUser === normalizedCorrect;
+    }
+  };
+
+  const generateEncouragement = (correct: boolean, hintsUsed: number): string => {
+    if (correct) {
+      if (hintsUsed === 0) {
+        return 'Excellent! You got it right on your own!';
+      } else if (hintsUsed === 1) {
+        return 'Great job! You figured it out with a little help.';
+      } else {
+        return 'Well done! Keep practicing to improve.';
+      }
+    } else {
+      if (hintsUsed === 0) {
+        return 'Not quite right. Would you like a hint?';
+      } else if (hintsUsed < 3) {
+        return 'Keep trying! Would you like another hint?';
+      } else {
+        return 'Let\'s review the explanation and try again later.';
+      }
+    }
+  };
+
   const handleRequestHint = async () => {
-    if (!quiz || !contentService || !studentId) return;
+    if (!quiz || !dbManager || !studentId) return;
 
     const currentQuestion = quiz.questions[currentQuestionIndex];
     const nextLevel = hintsUsed + 1;
 
     try {
-      const hint = await contentService.getHint(quizId, currentQuestion.questionId, nextLevel);
+      const hintRows = await dbManager.hintRepository.findByQuizAndQuestion(quizId, currentQuestion.questionId);
+      const hint = hintRows.find(row => row.level === nextLevel);
       
       if (hint) {
-        setCurrentHint(hint);
+        setCurrentHint({
+          hintId: hint.hint_id,
+          level: hint.level,
+          text: hint.hint_text,
+        });
         setHintsUsed(nextLevel);
 
         // Track hint request

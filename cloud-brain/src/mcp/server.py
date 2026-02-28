@@ -31,26 +31,68 @@ class MCPServer:
             data_dir = Path(__file__).parent / "data"
         self.data_dir = data_dir
         self.curriculum_data: dict[str, CurriculumStandard] = {}
+        # Indexes for efficient retrieval (Requirement 1.3)
+        self._grade_subject_index: dict[tuple[int, str], list[str]] = {}
         self._load_curriculum_data()
 
     def _load_curriculum_data(self) -> None:
-        """Load curriculum data from JSON files."""
+        """Load curriculum data from JSON files.
+        
+        Handles missing/corrupted files gracefully by logging errors and
+        initializing with empty data (Requirement 1.5).
+        """
+        curriculum_file = self.data_dir / "curriculum_standards.json"
+        
+        # Check if file exists
+        if not curriculum_file.exists():
+            logger.error(
+                f"Curriculum data file not found: {curriculum_file}. "
+                "MCP Server will return empty results."
+            )
+            return
+        
+        # Try to load and validate data
         try:
-            curriculum_file = self.data_dir / "curriculum_standards.json"
-            if curriculum_file.exists():
-                with open(curriculum_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    for item in data:
-                        standard = CurriculumStandard(**item)
-                        self.curriculum_data[standard.id] = standard
-                logger.info(
-                    f"Loaded {len(self.curriculum_data)} curriculum standards"
-                )
-            else:
-                logger.warning(f"Curriculum data file not found: {curriculum_file}")
+            with open(curriculum_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # Validate and load each standard
+            validation_errors = 0
+            for item in data:
+                try:
+                    standard = CurriculumStandard(**item)
+                    self.curriculum_data[standard.id] = standard
+                    
+                    # Build grade-subject index (Requirement 1.3)
+                    # subject is already a string value from the enum
+                    subject_value = standard.subject if isinstance(standard.subject, str) else standard.subject.value
+                    key = (standard.grade, subject_value)
+                    if key not in self._grade_subject_index:
+                        self._grade_subject_index[key] = []
+                    self._grade_subject_index[key].append(standard.id)
+                    
+                except Exception as e:
+                    validation_errors += 1
+                    logger.warning(
+                        f"Validation error for standard {item.get('id', 'unknown')}: {e}"
+                    )
+            
+            # Log loading statistics (Requirement 1.2)
+            logger.info(
+                f"Loaded {len(self.curriculum_data)} curriculum standards "
+                f"({validation_errors} validation errors)"
+            )
+            
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"Corrupted curriculum data file (invalid JSON): {curriculum_file}. "
+                f"Error: {e}. MCP Server will return empty results."
+            )
         except Exception as e:
-            logger.error(f"Error loading curriculum data: {e}")
-            raise
+            logger.error(
+                f"Error loading curriculum data: {e}. "
+                "MCP Server will return empty results."
+            )
 
     def get_curriculum_standards(
         self, grade: int, subject: str
@@ -66,15 +108,15 @@ class MCPServer:
         """
         try:
             subject_enum = Subject(subject)
+            subject_value = subject_enum.value
         except ValueError:
             logger.warning(f"Invalid subject: {subject}")
             return []
 
-        standards = [
-            standard
-            for standard in self.curriculum_data.values()
-            if standard.grade == grade and standard.subject == subject_enum
-        ]
+        # Use index for efficient retrieval (Requirement 1.3)
+        key = (grade, subject_value)
+        standard_ids = self._grade_subject_index.get(key, [])
+        standards = [self.curriculum_data[sid] for sid in standard_ids]
 
         logger.info(
             f"Found {len(standards)} standards for grade {grade}, subject {subject}"
@@ -303,3 +345,66 @@ class MCPServer:
 
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
+
+
+# Lambda handler for AWS Lambda integration
+_mcp_server_instance = None
+
+
+def lambda_handler(event: dict, context: Any) -> dict:
+    """AWS Lambda handler for MCP Server tool calls.
+    
+    Args:
+        event: Lambda event containing tool_name and arguments
+        context: Lambda context
+        
+    Returns:
+        Response dict with statusCode, body, and headers
+    """
+    global _mcp_server_instance
+    
+    # Initialize MCP Server on cold start
+    if _mcp_server_instance is None:
+        import os
+        data_path = os.environ.get("CURRICULUM_DATA_PATH")
+        if data_path:
+            _mcp_server_instance = MCPServer(data_dir=Path(data_path))
+        else:
+            _mcp_server_instance = MCPServer()
+        logger.info("MCP Server initialized for Lambda")
+    
+    try:
+        # Extract tool call information from event
+        tool_name = event.get("tool_name")
+        arguments = event.get("arguments", {})
+        
+        if not tool_name:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Missing tool_name in request"}),
+                "headers": {"Content-Type": "application/json"},
+            }
+        
+        # Handle tool call
+        result = _mcp_server_instance.handle_tool_call(tool_name, arguments)
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"result": result}),
+            "headers": {"Content-Type": "application/json"},
+        }
+        
+    except ValueError as e:
+        logger.error(f"Invalid request: {e}")
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": str(e)}),
+            "headers": {"Content-Type": "application/json"},
+        }
+    except Exception as e:
+        logger.error(f"Error handling tool call: {e}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Internal server error"}),
+            "headers": {"Content-Type": "application/json"},
+        }

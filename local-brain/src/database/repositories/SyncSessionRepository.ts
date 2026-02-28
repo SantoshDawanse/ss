@@ -157,14 +157,15 @@ export class SyncSessionRepository extends BaseRepository<SyncSessionRow> {
         LIMIT 1`,
       );
 
-      if (result.rows.length === 0) {
+      if (!result || result.length === 0) {
         return null;
       }
 
-      return this.rowToObject(result.rows.item(0));
+      return this.rowToObject(result[0]);
     } catch (error) {
       console.error('Error finding last completed sync:', error);
-      throw new Error(`Failed to find last sync: ${error}`);
+      // Return null instead of throwing for first-time users
+      return null;
     }
   }
 

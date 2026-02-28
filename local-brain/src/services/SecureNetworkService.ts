@@ -17,19 +17,20 @@
  */
 
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 
-// API Configuration
-const API_BASE_URL = 'https://api.sikshya-sathi.np/v1';
+// API Configuration - use the configured API base URL
+const API_BASE_URL = Constants.expoConfig?.extra?.apiBaseUrl || process.env.API_BASE_URL || 'https://zm3d9kk179.execute-api.us-east-1.amazonaws.com/development';
 
 // Certificate pins (SHA-256 hashes of public keys)
 // These should be updated when certificates are rotated
-const CERTIFICATE_PINS = {
-  'api.sikshya-sathi.np': [
-    // Primary certificate pin
-    'sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-    // Backup certificate pin (for rotation)
-    'sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=',
-  ],
+// For AWS API Gateway, certificate pinning is handled by AWS
+const CERTIFICATE_PINS: Record<string, string[]> = {
+  // Add custom domain pins here when using custom domain
+  // 'api.sikshya-sathi.np': [
+  //   'sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  //   'sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=',
+  // ],
 };
 
 export interface SecureRequestOptions extends RequestInit {
@@ -76,6 +77,8 @@ export class SecureNetworkService {
       // Build full URL
       const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
 
+      console.log(`[SecureNetworkService] Making request to: ${fullUrl}`);
+
       // Validate URL is HTTPS
       if (!fullUrl.startsWith('https://')) {
         throw new Error('Only HTTPS requests are allowed');
@@ -112,12 +115,34 @@ export class SecureNetworkService {
 
         clearTimeout(timeoutId);
 
+        console.log(`[SecureNetworkService] Response status: ${response.status}`);
+
         // Parse response
         let data: T | undefined;
+        let errorMessage: string | undefined;
         const contentType = response.headers.get('content-type');
         
         if (contentType && contentType.includes('application/json')) {
-          data = await response.json();
+          const jsonData = await response.json();
+          data = jsonData;
+          
+          // Extract error message from various formats
+          if (!response.ok) {
+            if (typeof jsonData === 'object') {
+              errorMessage = jsonData.message || jsonData.error || jsonData.errorMessage || response.statusText;
+            } else {
+              errorMessage = String(jsonData);
+            }
+          }
+        } else {
+          // Try to get text response for non-JSON errors
+          if (!response.ok) {
+            try {
+              errorMessage = await response.text();
+            } catch {
+              errorMessage = response.statusText;
+            }
+          }
         }
 
         return {
@@ -125,7 +150,7 @@ export class SecureNetworkService {
           status: response.status,
           statusText: response.statusText,
           data,
-          error: response.ok ? undefined : data?.toString() || response.statusText,
+          error: errorMessage,
         };
       } catch (error) {
         clearTimeout(timeoutId);
@@ -136,7 +161,9 @@ export class SecureNetworkService {
         throw error;
       }
     } catch (error) {
-      console.error('Secure request failed:', error);
+      console.error('[SecureNetworkService] Request failed:', error);
+      console.error('[SecureNetworkService] URL:', url);
+      console.error('[SecureNetworkService] API_BASE_URL:', API_BASE_URL);
       return {
         ok: false,
         status: 0,

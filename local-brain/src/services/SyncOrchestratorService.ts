@@ -35,66 +35,9 @@ import {
 } from '../utils/errorHandling';
 import { MonitoringService } from './MonitoringService';
 
-// Placeholder types for missing expo packages
-// TODO: Remove these when packages are installed
-type NetworkState = { isConnected: boolean; isInternetReachable: boolean };
-type FileInfo = { exists: boolean; size?: number; uri?: string };
-type DownloadResumable = {
-  downloadAsync: () => Promise<{ uri: string } | null>;
-};
-
-// Placeholder implementations for missing expo packages
-const Network = {
-  getNetworkStateAsync: async (): Promise<NetworkState> => {
-    // TODO: Implement with expo-network
-    console.warn('Network detection not implemented - using placeholder');
-    return { isConnected: true, isInternetReachable: true };
-  },
-};
-
-const FileSystem = {
-  documentDirectory: '/tmp/',
-  getInfoAsync: async (path: string): Promise<FileInfo> => {
-    // TODO: Implement with expo-file-system
-    return { exists: false };
-  },
-  readAsStringAsync: async (path: string, options?: any): Promise<string> => {
-    // TODO: Implement with expo-file-system
-    return '';
-  },
-  deleteAsync: async (path: string, options?: any): Promise<void> => {
-    // TODO: Implement with expo-file-system
-  },
-  createDownloadResumable: (
-    url: string,
-    path: string,
-    options?: any,
-    callback?: any,
-  ): DownloadResumable => {
-    // TODO: Implement with expo-file-system
-    return {
-      downloadAsync: async () => ({ uri: path }),
-    };
-  },
-};
-
-const Crypto = {
-  CryptoDigestAlgorithm: {
-    SHA256: 'SHA256',
-  },
-  CryptoEncoding: {
-    HEX: 'hex',
-  },
-  digestStringAsync: async (
-    algorithm: string,
-    data: string,
-    options?: any,
-  ): Promise<string> => {
-    // TODO: Implement with expo-crypto
-    // Placeholder: return a fake hash
-    return 'placeholder_hash_' + data.substring(0, 10);
-  },
-};
+// Import expo packages for file system and crypto operations
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Crypto from 'expo-crypto';
 
 // API Configuration
 import Constants from 'expo-constants';
@@ -164,6 +107,9 @@ export class SyncOrchestratorService {
     this.secureNetworkService = SecureNetworkService.getInstance();
     this.studentId = studentId;
     this.authToken = authToken;
+    
+    // Log API configuration for debugging
+    console.log('[SyncOrchestratorService] Initialized with API_BASE_URL:', API_BASE_URL);
   }
 
   /**
@@ -172,8 +118,17 @@ export class SyncOrchestratorService {
    */
   public async checkConnectivity(): Promise<boolean> {
     try {
-      const networkState = await Network.getNetworkStateAsync();
-      return networkState.isConnected === true && networkState.isInternetReachable === true;
+      // Simple connectivity check by attempting to reach the API
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      
+      const response = await fetch(API_BASE_URL + '/health', {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      return response.ok;
     } catch (error) {
       console.error('Error checking connectivity:', error);
       return false;
@@ -246,8 +201,9 @@ export class SyncOrchestratorService {
 
       // Execute download workflow only if there were logs to upload
       // or if the API indicates a bundle is available
+      // Use the backend session ID for download
       if (uploadResult.shouldDownload) {
-        await this.executeDownloadWorkflow(sessionId);
+        await this.executeDownloadWorkflow(uploadResult.backendSessionId);
       } else {
         console.log('Skipping download - no new data uploaded or API not available');
       }
@@ -341,8 +297,10 @@ export class SyncOrchestratorService {
   /**
    * Execute upload workflow: compress logs, upload, receive acknowledgment.
    * Requirement 4.2: Upload performance logs
+   * 
+   * For first-time users with no logs, still proceeds to download initial bundle.
    */
-  private async executeUploadWorkflow(sessionId: string): Promise<{ shouldDownload: boolean; logsUploaded: number }> {
+  private async executeUploadWorkflow(sessionId: string): Promise<{ shouldDownload: boolean; logsUploaded: number; backendSessionId: string }> {
     this.transitionState('uploading');
     await this.dbManager.syncSessionRepository.updateStatus(sessionId, 'uploading');
 
@@ -351,27 +309,43 @@ export class SyncOrchestratorService {
       this.studentId,
     );
 
-    if (unsyncedLogs.length === 0) {
-      console.log('No logs to upload - skipping sync');
+    // Check if this is a first-time user (no active bundle)
+    const activeBundle = await this.dbManager.learningBundleRepository.findActiveByStudent(
+      this.studentId
+    );
+    const isFirstTimeUser = !activeBundle;
+
+    // For first-time users or users with logs, always call upload endpoint
+    // This creates the sync session on the backend
+    let logs: PerformanceLog[] = [];
+    
+    if (unsyncedLogs.length > 0) {
+      // Convert to PerformanceLog format
+      logs = unsyncedLogs.map(row =>
+        this.dbManager.performanceLogRepository.parseLog(row),
+      );
+    } else if (!isFirstTimeUser) {
+      // Not first-time and no logs - skip sync
+      console.log('No new logs to upload and bundle exists - skipping sync');
       await this.dbManager.syncSessionRepository.updateLogsUploaded(sessionId, 0);
-      return { shouldDownload: false, logsUploaded: 0 };
+      return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
+    } else {
+      // First-time user with no logs - send empty array to create session
+      console.log('First-time user with no logs - creating sync session');
     }
 
-    // Convert to PerformanceLog format
-    const logs: PerformanceLog[] = unsyncedLogs.map(row =>
-      this.dbManager.performanceLogRepository.parseLog(row),
-    );
-
-    // Compress logs
+    // Compress logs (empty array for first-time users)
     const compressedLogs = await this.compressLogs(logs);
 
     // Upload with retry
     try {
       const uploadResponse = await this.uploadWithRetry(compressedLogs);
 
-      // Mark logs as synced
-      const logIds = unsyncedLogs.map(log => log.log_id!);
-      await this.dbManager.performanceLogRepository.markAsSynced(logIds);
+      // Mark logs as synced (if any)
+      if (unsyncedLogs.length > 0) {
+        const logIds = unsyncedLogs.map(log => log.log_id!);
+        await this.dbManager.performanceLogRepository.markAsSynced(logIds);
+      }
 
       // Update session
       await this.dbManager.syncSessionRepository.updateLogsUploaded(
@@ -379,16 +353,17 @@ export class SyncOrchestratorService {
         uploadResponse.logsReceived,
       );
 
-      console.log(`Uploaded ${uploadResponse.logsReceived} logs`);
+      console.log(`Uploaded ${uploadResponse.logsReceived} logs, backend session ID: ${uploadResponse.sessionId}`);
       
       return { 
-        shouldDownload: uploadResponse.bundleReady || false, 
-        logsUploaded: uploadResponse.logsReceived 
+        shouldDownload: uploadResponse.bundleReady || isFirstTimeUser, 
+        logsUploaded: uploadResponse.logsReceived,
+        backendSessionId: uploadResponse.sessionId
       };
     } catch (error) {
       // If upload fails due to API not being available, don't fail the entire sync
       console.warn('Upload failed - API may not be available:', error);
-      return { shouldDownload: false, logsUploaded: 0 };
+      return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
     }
   }
 
@@ -438,9 +413,8 @@ export class SyncOrchestratorService {
     
     // In React Native, we'll use base64 encoding as a simple compression
     // In production, you'd use a proper compression library like pako
-    const compressed = Buffer.from(encryptedLogs).toString('base64');
-    
-    return compressed;
+    // The encryptedLogs is already base64 encoded, so just return it
+    return encryptedLogs;
   }
 
   /**
@@ -454,13 +428,23 @@ export class SyncOrchestratorService {
 
     while (attempt < MAX_RETRY_ATTEMPTS) {
       try {
+        const requestBody = {
+          studentId: this.studentId,
+          logs: compressedLogs,
+          lastSyncTime: await this.getLastSyncTime(),
+        };
+        
+        // Log request details for debugging
+        console.log('[SyncOrchestratorService] Upload request:', {
+          studentId: this.studentId,
+          logsLength: compressedLogs.length,
+          logsType: typeof compressedLogs,
+          lastSyncTime: requestBody.lastSyncTime,
+        });
+        
         const response = await this.secureNetworkService.post<UploadResponse>(
           SYNC_UPLOAD_ENDPOINT,
-          {
-            studentId: this.studentId,
-            logs: compressedLogs,
-            lastSyncTime: await this.getLastSyncTime(),
-          },
+          requestBody,
           {
             headers: {
               'Authorization': `Bearer ${this.authToken}`,
@@ -570,14 +554,22 @@ export class SyncOrchestratorService {
     checksum: string,
   ): Promise<string> {
     const fileName = `bundle_${sessionId}.zip`;
-    const filePath = `${FileSystem.documentDirectory}${fileName}`;
+    // Access directory constants - they exist at runtime even if TypeScript doesn't see them
+    const docDir = (FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory || '';
+    const filePath = `${docDir}${fileName}`;
+
+    console.log(`Downloading bundle: size=${bundleSize}, checksum=${checksum}`);
+    console.log(`Download URL: ${bundleUrl.substring(0, 100)}...`);
 
     // Check if partial download exists
     let downloadedBytes = 0;
     const fileInfo = await FileSystem.getInfoAsync(filePath);
     if (fileInfo.exists && fileInfo.size !== undefined) {
-      downloadedBytes = fileInfo.size;
-      console.log(`Resuming download from byte ${downloadedBytes}`);
+      // If file exists, verify if it's a valid partial download or corrupted
+      // For now, delete and start fresh to avoid checksum issues
+      console.log(`Deleting existing file to start fresh download`);
+      await FileSystem.deleteAsync(filePath, { idempotent: true });
+      downloadedBytes = 0;
     }
 
     // Store download progress
@@ -619,6 +611,12 @@ export class SyncOrchestratorService {
           throw new Error('Download failed: no result');
         }
 
+        // Log the actual downloaded file size
+        const downloadedFileInfo = await FileSystem.getInfoAsync(result.uri);
+        if (downloadedFileInfo.exists && downloadedFileInfo.size !== undefined) {
+          console.log(`Downloaded file size: ${downloadedFileInfo.size} bytes (expected: ${bundleSize} bytes)`);
+        }
+
         console.log('Download complete:', result.uri);
         return result.uri;
       } catch (error) {
@@ -649,23 +647,47 @@ export class SyncOrchestratorService {
    */
   private async verifyChecksum(filePath: string, expectedChecksum: string): Promise<boolean> {
     try {
-      // Read file and compute SHA-256 hash
-      const fileContent = await FileSystem.readAsStringAsync(filePath);
+      // Get file info first
+      const fileInfo = await FileSystem.getInfoAsync(filePath);
+      if (!fileInfo.exists) {
+        logError('storage', 'high', 'File does not exist for checksum verification', { filePath });
+        return false;
+      }
       
-      const hash = await Crypto.digestStringAsync(
+      console.log(`Verifying checksum for file: ${filePath}, size: ${fileInfo.size} bytes`);
+      
+      // Read file as base64
+      const fileContentBase64 = await FileSystem.readAsStringAsync(filePath, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      
+      console.log(`File content length (base64): ${fileContentBase64.length} chars`);
+      
+      // Hash the file content
+      // The encoding parameter tells digestStringAsync that the INPUT is base64-encoded binary data
+      // It will decode the base64 to binary before hashing
+      // The output is in base64 format, we need to convert to hex
+      const hashBase64 = await Crypto.digestStringAsync(
         Crypto.CryptoDigestAlgorithm.SHA256,
-        fileContent,
-        { encoding: Crypto.CryptoEncoding.HEX },
+        fileContentBase64,
+        { encoding: Crypto.CryptoEncoding.BASE64 },
       );
 
-      if (hash !== expectedChecksum) {
-        const errorResponse = handleChecksumMismatchError(expectedChecksum, hash);
+      // Convert base64 hash to hex to match backend format
+      const hashHex = this.base64ToHex(hashBase64);
+
+      console.log(`Checksum verification: expected=${expectedChecksum}, actual=${hashHex}`);
+
+      if (hashHex !== expectedChecksum) {
+        const errorResponse = handleChecksumMismatchError(expectedChecksum, hashHex);
         logError('storage', 'high', errorResponse.message, errorResponse.details);
         return false;
       }
 
+      console.log('✓ Checksum verification passed!');
       return true;
     } catch (error) {
+      console.error('Checksum verification error:', error);
       logError(
         'storage',
         'high',
@@ -674,6 +696,23 @@ export class SyncOrchestratorService {
       );
       return false;
     }
+  }
+
+  /**
+   * Convert base64 string to hex string
+   */
+  private base64ToHex(base64: string): string {
+    // Decode base64 to binary string
+    const binary = atob(base64);
+    
+    // Convert binary string to hex
+    let hex = '';
+    for (let i = 0; i < binary.length; i++) {
+      const byte = binary.charCodeAt(i);
+      hex += byte.toString(16).padStart(2, '0');
+    }
+    
+    return hex;
   }
 
   /**

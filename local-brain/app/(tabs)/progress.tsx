@@ -9,7 +9,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Loading } from '@/components/ui/loading';
+import { Badge } from '@/components/ui/badge';
 import { useApp } from '@/src/contexts/AppContext';
+import { StudentProfileService } from '@/src/services/StudentProfileService';
 
 interface ProgressStats {
   totalLessons: number;
@@ -20,8 +22,15 @@ interface ProgressStats {
   dayStreak: number;
 }
 
+interface UserProfile {
+  studentId: string;
+  studentName: string;
+  createdAt: Date;
+}
+
 export default function ProgressScreen() {
   const { studentId, dbManager, isInitialized } = useApp();
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [stats, setStats] = useState<ProgressStats>({
     totalLessons: 0,
     completedLessons: 0,
@@ -40,6 +49,16 @@ export default function ProgressScreen() {
       }
 
       try {
+        // Load user profile
+        const profileService = StudentProfileService.getInstance();
+        const userProfile = await profileService.loadProfile();
+        if (userProfile) {
+          setProfile({
+            studentId: userProfile.studentId,
+            studentName: userProfile.studentName,
+            createdAt: userProfile.createdAt ? new Date(userProfile.createdAt) : new Date(),
+          });
+        }
         // Get active bundle for the student
         const activeBundle = await dbManager.learningBundleRepository.getActiveBundle(studentId);
         
@@ -116,6 +135,10 @@ export default function ProgressScreen() {
     ? Math.round((stats.completedQuizzes / stats.totalQuizzes) * 100) 
     : 0;
 
+  const daysSinceRegistration = profile 
+    ? Math.floor((Date.now() - profile.createdAt.getTime()) / (1000 * 60 * 60 * 24))
+    : 0;
+
   return (
     <SafeAreaView className="flex-1 bg-neutral-50" edges={['top']}>
       {/* Header */}
@@ -126,6 +149,48 @@ export default function ProgressScreen() {
 
       <ScrollView showsVerticalScrollIndicator={false}>
         <View className="p-4">
+          {/* User Profile Card */}
+          {profile && (
+            <Card variant="elevated" padding="lg" style={{ marginBottom: 16 }}>
+              <CardContent>
+                <View className="flex-row items-center">
+                  {/* Avatar */}
+                  <View className="w-16 h-16 rounded-full bg-primary-500 items-center justify-center mr-4">
+                    <Text className="text-2xl font-bold text-white">
+                      {profile.studentName.charAt(0).toUpperCase()}
+                    </Text>
+                  </View>
+                  
+                  {/* Profile Info */}
+                  <View className="flex-1">
+                    <Text className="text-xl font-bold text-neutral-900 mb-1">
+                      {profile.studentName}
+                    </Text>
+                    <View className="flex-row items-center mb-1">
+                      <Ionicons name="calendar-outline" size={14} color="#666666" />
+                      <Text className="text-sm text-neutral-600 ml-1">
+                        Joined {daysSinceRegistration === 0 ? 'today' : `${daysSinceRegistration} day${daysSinceRegistration > 1 ? 's' : ''} ago`}
+                      </Text>
+                    </View>
+                    <View className="flex-row items-center">
+                      <Ionicons name="finger-print-outline" size={14} color="#666666" />
+                      <Text className="text-xs text-neutral-400 ml-1" numberOfLines={1}>
+                        ID: {profile.studentId.substring(0, 8)}...
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Status Badge */}
+                  <View>
+                    <Badge variant="success" size="sm">
+                      Active
+                    </Badge>
+                  </View>
+                </View>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Overall Progress */}
           <Card variant="elevated" padding="lg" style={{ marginBottom: 16 }}>
             <CardHeader>

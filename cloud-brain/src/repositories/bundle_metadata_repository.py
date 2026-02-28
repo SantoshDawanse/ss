@@ -65,8 +65,8 @@ class BundleMetadataRepository:
             Exception: If storage fails
         """
         item = {
-            "bundle_id": bundle_id,
-            "student_id": student_id,
+            "bundleId": bundle_id,  # DynamoDB partition key (camelCase)
+            "studentId": student_id,  # DynamoDB sort key (camelCase)
             "s3_key": s3_key,
             "total_size": total_size,
             "checksum": checksum,
@@ -103,7 +103,7 @@ class BundleMetadataRepository:
             Exception: If retrieval fails
         """
         try:
-            response = self.table.get_item(Key={"bundle_id": bundle_id})
+            response = self.table.get_item(Key={"bundleId": bundle_id})
 
             if "Item" in response:
                 logger.info(f"Retrieved metadata for bundle {bundle_id}")
@@ -130,11 +130,14 @@ class BundleMetadataRepository:
             Exception: If query fails
         """
         try:
-            # Query using GSI on student_id
+            # Query using GSI on studentId
             response = self.table.query(
                 IndexName="StudentIdIndex",
-                KeyConditionExpression="student_id = :sid",
-                FilterExpression="status = :status",
+                KeyConditionExpression="studentId = :sid",
+                FilterExpression="#status = :status",
+                ExpressionAttributeNames={
+                    "#status": "status"
+                },
                 ExpressionAttributeValues={
                     ":sid": student_id,
                     ":status": "active",
@@ -165,7 +168,7 @@ class BundleMetadataRepository:
         try:
             response = self.table.query(
                 IndexName="StudentIdIndex",
-                KeyConditionExpression="student_id = :sid",
+                KeyConditionExpression="studentId = :sid",
                 ExpressionAttributeValues={":sid": student_id},
             )
 
@@ -193,8 +196,11 @@ class BundleMetadataRepository:
         """
         try:
             response = self.table.update_item(
-                Key={"bundle_id": bundle_id},
-                UpdateExpression="SET status = :status, updated_at = :updated",
+                Key={"bundleId": bundle_id},
+                UpdateExpression="SET #status = :status, updated_at = :updated",
+                ExpressionAttributeNames={
+                    "#status": "status"
+                },
                 ExpressionAttributeValues={
                     ":status": status,
                     ":updated": datetime.utcnow().isoformat(),
@@ -220,7 +226,7 @@ class BundleMetadataRepository:
             Exception: If deletion fails
         """
         try:
-            self.table.delete_item(Key={"bundle_id": bundle_id})
+            self.table.delete_item(Key={"bundleId": bundle_id})
             logger.info(f"Deleted metadata for bundle {bundle_id}")
 
         except ClientError as e:
@@ -245,7 +251,10 @@ class BundleMetadataRepository:
 
         try:
             response = self.table.scan(
-                FilterExpression="valid_until < :now AND status = :status",
+                FilterExpression="valid_until < :now AND #status = :status",
+                ExpressionAttributeNames={
+                    "#status": "status"
+                },
                 ExpressionAttributeValues={
                     ":now": current_time.isoformat(),
                     ":status": "active",

@@ -16,7 +16,7 @@ class MasteryLevel(str, Enum):
     ADVANCED = "advanced"
 
 
-class TopicKnowledge(BaseModel):
+class TopicMastery(BaseModel):
     """Knowledge state for a specific topic."""
 
     proficiency: float = Field(..., ge=0, le=1, description="Proficiency score (0-1)")
@@ -26,10 +26,14 @@ class TopicKnowledge(BaseModel):
     cognitive_level: int = Field(..., ge=1, le=6, description="Bloom's taxonomy level (1-6)")
 
 
+# Alias for backward compatibility
+TopicKnowledge = TopicMastery
+
+
 class SubjectKnowledge(BaseModel):
     """Knowledge state for a subject."""
 
-    topics: dict[str, TopicKnowledge] = Field(
+    topics: dict[str, TopicMastery] = Field(
         default_factory=dict, description="Map of topic ID to knowledge"
     )
     overall_proficiency: float = Field(

@@ -9,7 +9,7 @@ from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 
-from src.models.personalization import KnowledgeModel, SubjectKnowledge, TopicKnowledge, MasteryLevel
+from src.models.personalization import KnowledgeModel, SubjectKnowledge, TopicMastery, MasteryLevel
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class KnowledgeModelRepository:
                 for subject_name, subject_data in subjects_data.items():
                     topics = {}
                     for topic_id, topic_data in subject_data.get("topics", {}).items():
-                        topics[topic_id] = TopicKnowledge(
+                        topics[topic_id] = TopicMastery(
                             proficiency=topic_data["proficiency"],
                             attempts=topic_data["attempts"],
                             last_practiced=datetime.fromisoformat(topic_data["last_practiced"]) if topic_data.get("last_practiced") else None,
@@ -199,7 +199,7 @@ class KnowledgeModelRepository:
             topic.mastery_level = mastery_level
             topic.cognitive_level = cognitive_level
         else:
-            knowledge_model.subjects[subject].topics[topic_id] = TopicKnowledge(
+            knowledge_model.subjects[subject].topics[topic_id] = TopicMastery(
                 proficiency=proficiency,
                 attempts=1,
                 last_practiced=datetime.utcnow(),
