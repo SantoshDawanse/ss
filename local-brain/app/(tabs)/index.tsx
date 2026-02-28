@@ -32,14 +32,69 @@ export default function HomeScreen() {
       }
       
       // Get auth token from secure storage
-      const authToken = await SecureStore.getItemAsync('authToken');
+      let authToken = await SecureStore.getItemAsync('authToken');
+      
+      // If no auth token, try to re-register to get one
       if (!authToken) {
-        Alert.alert(
-          'Authentication Required',
-          'Please restart the app to authenticate.',
-          [{ text: 'OK' }]
-        );
-        return;
+        console.log('No auth token found, attempting to re-register...');
+        try {
+          // Get student profile to re-register
+          const profileJson = await SecureStore.getItemAsync('studentProfile');
+          if (!profileJson) {
+            Alert.alert(
+              'Profile Not Found',
+              'Student profile is not available. Please restart the app.',
+              [{ text: 'OK' }]
+            );
+            return;
+          }
+          
+          const profile = JSON.parse(profileJson);
+          const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://zm3d9kk179.execute-api.us-east-1.amazonaws.com/development';
+          
+          // Re-register to get auth token
+          const response = await fetch(`${API_BASE_URL}/api/students/register`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              studentId: profile.studentId,
+              studentName: profile.studentName,
+            }),
+          });
+          
+          if (response.status === 200 || response.status === 201) {
+            const data = await response.json();
+            if (data.authToken) {
+              authToken = data.authToken;
+              await SecureStore.setItemAsync('authToken', authToken);
+              console.log('Auth token obtained and stored successfully');
+            } else {
+              Alert.alert(
+                'Authentication Failed',
+                'Could not obtain authentication token. Please check your internet connection and try again.',
+                [{ text: 'OK' }]
+              );
+              return;
+            }
+          } else {
+            Alert.alert(
+              'Registration Failed',
+              'Could not register with cloud-brain. Please check your internet connection and try again.',
+              [{ text: 'OK' }]
+            );
+            return;
+          }
+        } catch (regError) {
+          console.error('Re-registration error:', regError);
+          Alert.alert(
+            'Authentication Error',
+            'Could not authenticate with cloud-brain. Please check your internet connection and try again.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
       }
       
       const publicKey = 'demo_public_key';

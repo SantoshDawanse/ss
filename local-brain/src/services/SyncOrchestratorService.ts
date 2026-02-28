@@ -38,6 +38,7 @@ import { MonitoringService } from './MonitoringService';
 // Import expo packages for file system and crypto operations
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
+import CryptoJS from 'crypto-js';
 
 // API Configuration
 import Constants from 'expo-constants';
@@ -315,6 +316,21 @@ export class SyncOrchestratorService {
     );
     const isFirstTimeUser = !activeBundle;
 
+    // Check if we have actual content (lessons/quizzes) even if bundle exists
+    let hasContent = false;
+    if (activeBundle) {
+      const lessonCount = await this.dbManager.executeSql(
+        'SELECT COUNT(*) as count FROM lessons WHERE bundle_id = ?',
+        [activeBundle.bundle_id]
+      );
+      const quizCount = await this.dbManager.executeSql(
+        'SELECT COUNT(*) as count FROM quizzes WHERE bundle_id = ?',
+        [activeBundle.bundle_id]
+      );
+      hasContent = (lessonCount[0]?.count > 0 || quizCount[0]?.count > 0);
+      console.log(`Active bundle has ${lessonCount[0]?.count || 0} lessons and ${quizCount[0]?.count || 0} quizzes`);
+    }
+
     // For first-time users or users with logs, always call upload endpoint
     // This creates the sync session on the backend
     let logs: PerformanceLog[] = [];
@@ -324,14 +340,16 @@ export class SyncOrchestratorService {
       logs = unsyncedLogs.map(row =>
         this.dbManager.performanceLogRepository.parseLog(row),
       );
-    } else if (!isFirstTimeUser) {
-      // Not first-time and no logs - skip sync
-      console.log('No new logs to upload and bundle exists - skipping sync');
+    } else if (!isFirstTimeUser && hasContent) {
+      // Not first-time, has content, and no logs - skip sync
+      console.log('No new logs to upload and bundle with content exists - skipping sync');
       await this.dbManager.syncSessionRepository.updateLogsUploaded(sessionId, 0);
       return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
     } else {
-      // First-time user with no logs - send empty array to create session
-      console.log('First-time user with no logs - creating sync session');
+      // First-time user or bundle without content - send empty array to create session
+      console.log(isFirstTimeUser 
+        ? 'First-time user with no logs - creating sync session'
+        : 'Bundle exists but has no content - re-syncing');
     }
 
     // Compress logs (empty array for first-time users)
@@ -356,7 +374,7 @@ export class SyncOrchestratorService {
       console.log(`Uploaded ${uploadResponse.logsReceived} logs, backend session ID: ${uploadResponse.sessionId}`);
       
       return { 
-        shouldDownload: uploadResponse.bundleReady || isFirstTimeUser, 
+        shouldDownload: uploadResponse.bundleReady || isFirstTimeUser || !hasContent, 
         logsUploaded: uploadResponse.logsReceived,
         backendSessionId: uploadResponse.sessionId
       };
@@ -615,6 +633,21 @@ export class SyncOrchestratorService {
         const downloadedFileInfo = await FileSystem.getInfoAsync(result.uri);
         if (downloadedFileInfo.exists && downloadedFileInfo.size !== undefined) {
           console.log(`Downloaded file size: ${downloadedFileInfo.size} bytes (expected: ${bundleSize} bytes)`);
+          
+          // Read first few bytes to check if it's actually a zip file
+          const firstBytes = await FileSystem.readAsStringAsync(result.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+            length: 100,
+          });
+          const decoded = atob(firstBytes);
+          const hexBytes = Array.from(decoded.substring(0, 10)).map(c => 
+            c.charCodeAt(0).toString(16).padStart(2, '0')
+          ).join(' ');
+          console.log(`First 10 bytes (hex): ${hexBytes}`);
+          console.log(`First 10 bytes (ascii): ${decoded.substring(0, 10).split('').map(c => {
+            const code = c.charCodeAt(0);
+            return code >= 32 && code < 127 ? c : '.';
+          }).join('')}`);
         }
 
         console.log('Download complete:', result.uri);
@@ -643,7 +676,7 @@ export class SyncOrchestratorService {
   /**
    * Verify bundle checksum.
    * Requirement 4.8: Data integrity validation
-   * Handles checksum mismatches by triggering re-download.
+   * Uses crypto-js for reliable binary hashing that matches Python's hashlib.
    */
   private async verifyChecksum(filePath: string, expectedChecksum: string): Promise<boolean> {
     try {
@@ -661,20 +694,16 @@ export class SyncOrchestratorService {
         encoding: FileSystem.EncodingType.Base64,
       });
       
-      console.log(`File content length (base64): ${fileContentBase64.length} chars`);
+      console.log(`File content (base64 length): ${fileContentBase64.length} chars`);
       
-      // Hash the file content
-      // The encoding parameter tells digestStringAsync that the INPUT is base64-encoded binary data
-      // It will decode the base64 to binary before hashing
-      // The output is in base64 format, we need to convert to hex
-      const hashBase64 = await Crypto.digestStringAsync(
-        Crypto.CryptoDigestAlgorithm.SHA256,
-        fileContentBase64,
-        { encoding: Crypto.CryptoEncoding.BASE64 },
-      );
-
-      // Convert base64 hash to hex to match backend format
-      const hashHex = this.base64ToHex(hashBase64);
+      // Parse base64 to WordArray (binary data)
+      const wordArray = CryptoJS.enc.Base64.parse(fileContentBase64);
+      
+      // Hash the binary data using SHA256
+      const hash = CryptoJS.SHA256(wordArray);
+      
+      // Convert hash to hex string (built-in function)
+      const hashHex = hash.toString(CryptoJS.enc.Hex);
 
       console.log(`Checksum verification: expected=${expectedChecksum}, actual=${hashHex}`);
 
@@ -696,23 +725,6 @@ export class SyncOrchestratorService {
       );
       return false;
     }
-  }
-
-  /**
-   * Convert base64 string to hex string
-   */
-  private base64ToHex(base64: string): string {
-    // Decode base64 to binary string
-    const binary = atob(base64);
-    
-    // Convert binary string to hex
-    let hex = '';
-    for (let i = 0; i < binary.length; i++) {
-      const byte = binary.charCodeAt(i);
-      hex += byte.toString(16).padStart(2, '0');
-    }
-    
-    return hex;
   }
 
   /**

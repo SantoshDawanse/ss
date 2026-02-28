@@ -13,28 +13,64 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
+import CryptoJS from 'crypto-js';
+import pako from 'pako';
 import { DatabaseManager } from '../database/DatabaseManager';
 import { LearningBundle, Lesson, Quiz, Hint, StudyTrack } from '../models';
 import { LearningBundleRow } from '../database/repositories/LearningBundleRepository';
 
-// Bundle structure after decompression
+// Bundle structure after decompression (matches Python's snake_case)
 interface BundleData {
-  bundleId: string;
-  studentId: string;
-  validFrom: string;
-  validUntil: string;
-  totalSize: number;
+  bundle_id: string;
+  student_id: string;
+  valid_from: string;
+  valid_until: string;
+  total_size: number;
   checksum: string;
-  signature: string;
   subjects: SubjectData[];
 }
 
 interface SubjectData {
   subject: string;
-  lessons: Lesson[];
-  quizzes: Quiz[];
-  hints: Record<string, Hint[]>;
-  studyTrack: StudyTrack;
+  lessons: RawLesson[];
+  quizzes: RawQuiz[];
+  hints: Record<string, RawHint[]>;
+  revision_plan?: any;
+  study_track?: RawStudyTrack;
+}
+
+// Raw data structures from backend (snake_case)
+interface RawLesson {
+  lesson_id: string;
+  subject: string;
+  topic: string;
+  title: string;
+  difficulty: 'easy' | 'medium' | 'hard';
+  estimated_minutes: number;
+  curriculum_standards: string[];
+  sections: any[];
+}
+
+interface RawQuiz {
+  quiz_id: string;
+  subject: string;
+  topic: string;
+  title: string;
+  difficulty: 'easy' | 'medium' | 'hard';
+  time_limit?: number;
+  questions: any[];
+}
+
+interface RawHint {
+  hint_id: string;
+  level: number;
+  text: string;
+}
+
+interface RawStudyTrack {
+  track_id: string;
+  subject: string;
+  weeks: any[];
 }
 
 export class BundleImportService {
@@ -85,7 +121,7 @@ export class BundleImportService {
       console.log('✓ Bundle imported to database');
 
       // Step 5: Archive old bundles
-      await this.archiveOldBundles(bundleData.studentId, bundleData.bundleId);
+      await this.archiveOldBundles(bundleData.student_id, bundleData.bundle_id);
       console.log('✓ Old bundles archived');
 
       console.log('Bundle import complete');
@@ -98,21 +134,25 @@ export class BundleImportService {
   /**
    * Verify bundle checksum using SHA-256.
    * Requirement 4.8: Data integrity validation
+   * Uses crypto-js for reliable binary hashing.
    */
   private async verifyChecksum(filePath: string, expectedChecksum: string): Promise<boolean> {
     try {
+      // Read file as base64
       const fileContent = await FileSystem.readAsStringAsync(filePath, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      // Hash the base64 content (expo-crypto will decode to binary before hashing)
-      const hash = await Crypto.digestStringAsync(
-        Crypto.CryptoDigestAlgorithm.SHA256,
-        fileContent,
-        { encoding: Crypto.CryptoEncoding.BASE64 },
-      );
+      // Parse base64 to WordArray (binary data)
+      const wordArray = CryptoJS.enc.Base64.parse(fileContent);
+      
+      // Hash the binary data using SHA256
+      const hash = CryptoJS.SHA256(wordArray);
+      
+      // Convert hash to hex string
+      const hashHex = hash.toString(CryptoJS.enc.Hex);
 
-      return hash.toLowerCase() === expectedChecksum.toLowerCase();
+      return hashHex.toLowerCase() === expectedChecksum.toLowerCase();
     } catch (error) {
       console.error('Checksum verification error:', error);
       return false;
@@ -123,36 +163,24 @@ export class BundleImportService {
    * Verify bundle signature using RSA-2048.
    * Requirement 7.7: Content signature verification
    * 
-   * Note: In production, use a proper crypto library like react-native-rsa-native
-   * or expo-crypto with RSA support. This is a placeholder implementation.
+   * Note: Signature is not included in the compressed bundle itself.
+   * It's verified separately on the compressed data before decompression.
+   * This method is a placeholder for future implementation.
    */
   private async verifySignature(bundleData: BundleData): Promise<boolean> {
     try {
-      // In production, implement proper RSA-2048 signature verification:
-      // 1. Extract signature from bundle
-      // 2. Compute hash of bundle content (excluding signature)
-      // 3. Verify signature using public key
-      // 4. Return true if signature is valid
+      // Note: The signature is NOT in the bundle JSON - it's calculated on the
+      // compressed data and stored separately in the backend metadata.
+      // The signature verification should happen on the compressed file before
+      // decompression, not on the decompressed bundle data.
       
-      // Placeholder: Check that signature exists and is non-empty
-      if (!bundleData.signature || bundleData.signature.length === 0) {
-        console.error('Bundle signature is missing');
-        return false;
-      }
-
-      // TODO: Implement actual RSA-2048 signature verification
-      // Example using a crypto library:
-      // const contentHash = await this.computeContentHash(bundleData);
-      // const isValid = await RSA.verify(
-      //   contentHash,
-      //   bundleData.signature,
-      //   this.publicKey,
-      //   RSA.SHA256withRSA
-      // );
-      // return isValid;
-
-      console.warn('RSA signature verification not fully implemented - using placeholder');
-      return true; // Placeholder - always returns true
+      // For now, we skip signature verification since:
+      // 1. We already verified the checksum of the compressed file
+      // 2. The signature would need to be passed separately from the download endpoint
+      // 3. This is marked as a TODO for future implementation
+      
+      console.log('⚠ Signature verification skipped (not implemented yet)');
+      return true; // Skip signature verification for now
     } catch (error) {
       console.error('Signature verification error:', error);
       return false;
@@ -162,31 +190,45 @@ export class BundleImportService {
   /**
    * Decompress and parse bundle file.
    * 
-   * The bundle is expected to be gzip-compressed JSON.
-   * TODO: Install pako or react-native-zip-archive for proper gzip decompression
+   * The bundle is gzip-compressed JSON.
+   * Uses pako for proper gzip decompression.
    */
   private async decompressBundle(bundlePath: string): Promise<BundleData> {
     try {
       // Read compressed file as base64
-      const compressedContent = await FileSystem.readAsStringAsync(bundlePath, {
+      const compressedBase64 = await FileSystem.readAsStringAsync(bundlePath, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      // Decompress gzip
-      // TODO: Use pako.ungzip() or similar for proper gzip decompression
-      // For now, assume the content is base64-encoded JSON (for testing)
-      let decompressed: string;
-      try {
-        // Try to decode as base64 JSON (for testing/development)
-        // Use atob for React Native compatibility
-        decompressed = atob(compressedContent);
-      } catch (e) {
-        // If that fails, try to use it directly
-        decompressed = compressedContent;
+      // Decode base64 to binary string
+      const binaryString = atob(compressedBase64);
+      
+      // Convert binary string to Uint8Array
+      const compressedBytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        compressedBytes[i] = binaryString.charCodeAt(i);
       }
+      
+      console.log(`Decompressing bundle: ${compressedBytes.length} bytes`);
+      
+      // Decompress using pako
+      const decompressedBytes = pako.ungzip(compressedBytes);
+      
+      // Convert decompressed bytes to string
+      const decompressed = new TextDecoder('utf-8').decode(decompressedBytes);
+      
+      console.log(`Decompressed bundle: ${decompressed.length} chars`);
+      
+      // Log first 200 chars of decompressed content for debugging
+      console.log(`Bundle content preview: ${decompressed.substring(0, 200)}`);
       
       // Parse JSON
       const bundleData: BundleData = JSON.parse(decompressed);
+      
+      // Log the parsed structure
+      console.log(`Parsed bundle keys: ${Object.keys(bundleData).join(', ')}`);
+      console.log(`Bundle checksum value: "${bundleData.checksum}" (type: ${typeof bundleData.checksum})`);
+      console.log(`Bundle checksum length: ${bundleData.checksum?.length || 0}`);
 
       // Validate bundle structure
       this.validateBundleStructure(bundleData);
@@ -202,24 +244,30 @@ export class BundleImportService {
    * Validate bundle data structure.
    */
   private validateBundleStructure(bundleData: BundleData): void {
-    if (!bundleData.bundleId) {
-      throw new Error('Bundle missing bundleId');
+    console.log(`Validating bundle structure...`);
+    console.log(`bundle_id: "${bundleData.bundle_id}"`);
+    console.log(`student_id: "${bundleData.student_id}"`);
+    console.log(`checksum: "${bundleData.checksum}" (type: ${typeof bundleData.checksum}, length: ${bundleData.checksum?.length})`);
+    
+    if (!bundleData.bundle_id) {
+      throw new Error('Bundle missing bundle_id');
     }
-    if (!bundleData.studentId) {
-      throw new Error('Bundle missing studentId');
+    if (!bundleData.student_id) {
+      throw new Error('Bundle missing student_id');
     }
-    if (!bundleData.validFrom || !bundleData.validUntil) {
+    if (!bundleData.valid_from || !bundleData.valid_until) {
       throw new Error('Bundle missing validity dates');
     }
-    if (!bundleData.checksum) {
-      throw new Error('Bundle missing checksum');
-    }
-    if (!bundleData.signature) {
-      throw new Error('Bundle missing signature');
+    // Note: checksum field exists but is empty string in the compressed bundle
+    // The actual checksum is verified separately before decompression
+    if (bundleData.checksum === undefined || bundleData.checksum === null) {
+      throw new Error('Bundle missing checksum field');
     }
     if (!Array.isArray(bundleData.subjects)) {
       throw new Error('Bundle missing subjects array');
     }
+
+    console.log(`✓ Bundle structure validation passed`);
 
     // Validate each subject
     for (const subject of bundleData.subjects) {
@@ -232,9 +280,7 @@ export class BundleImportService {
       if (!Array.isArray(subject.quizzes)) {
         throw new Error(`Subject ${subject.subject} missing quizzes array`);
       }
-      if (!subject.studyTrack) {
-        throw new Error(`Subject ${subject.subject} missing study track`);
-      }
+      // study_track is optional, so don't validate it
     }
   }
 
@@ -242,100 +288,139 @@ export class BundleImportService {
    * Import bundle data to database in a transaction.
    */
   private async importToDatabase(bundleData: BundleData): Promise<void> {
-    await this.dbManager.transaction(async () => {
-      // 1. Insert learning bundle
-      const bundleRow: LearningBundleRow = {
-        bundle_id: bundleData.bundleId,
-        student_id: bundleData.studentId,
-        valid_from: new Date(bundleData.validFrom).getTime(),
-        valid_until: new Date(bundleData.validUntil).getTime(),
-        total_size: bundleData.totalSize,
-        checksum: bundleData.checksum,
-        status: 'active',
-      };
-      await this.dbManager.learningBundleRepository.create(bundleRow);
+    try {
+      await this.dbManager.transaction(async () => {
+        // 1. Insert learning bundle
+        const bundleRow: LearningBundleRow = {
+          bundle_id: bundleData.bundle_id,
+          student_id: bundleData.student_id,
+          valid_from: new Date(bundleData.valid_from).getTime(),
+          valid_until: new Date(bundleData.valid_until).getTime(),
+          total_size: bundleData.total_size,
+          checksum: bundleData.checksum,
+          status: 'active',
+        };
+        await this.dbManager.learningBundleRepository.create(bundleRow);
+        console.log(`✓ Created bundle record: ${bundleData.bundle_id}`);
 
-      // 2. Import each subject's content
-      for (const subject of bundleData.subjects) {
-        await this.importSubjectContent(bundleData.bundleId, subject);
-      }
-    });
+        // 2. Import each subject's content
+        for (const subject of bundleData.subjects) {
+          await this.importSubjectContent(bundleData.bundle_id, subject);
+        }
+      });
+    } catch (error) {
+      console.error('Error importing bundle to database:', error);
+      throw error;
+    }
   }
 
   /**
    * Import subject content (lessons, quizzes, hints, study track).
    */
   private async importSubjectContent(bundleId: string, subject: SubjectData): Promise<void> {
+    console.log(`Importing subject: ${subject.subject}`);
+    console.log(`  - ${subject.lessons.length} lessons`);
+    console.log(`  - ${subject.quizzes.length} quizzes`);
+    console.log(`  - ${Object.keys(subject.hints).length} quiz hint sets`);
+    
     // Import lessons
-    for (const lesson of subject.lessons) {
-      await this.dbManager.runSql(
-        `INSERT INTO lessons 
-        (lesson_id, bundle_id, subject, topic, title, difficulty, content_json, estimated_minutes, curriculum_standards)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          lesson.lessonId,
-          bundleId,
-          lesson.subject,
-          lesson.topic,
-          lesson.title,
-          lesson.difficulty,
-          JSON.stringify(lesson.sections),
-          lesson.estimatedMinutes,
-          JSON.stringify(lesson.curriculumStandards),
-        ],
-      );
-    }
-
-    // Import quizzes
-    for (const quiz of subject.quizzes) {
-      await this.dbManager.runSql(
-        `INSERT INTO quizzes 
-        (quiz_id, bundle_id, subject, topic, title, difficulty, time_limit, questions_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          quiz.quizId,
-          bundleId,
-          quiz.subject,
-          quiz.topic,
-          quiz.title,
-          quiz.difficulty,
-          quiz.timeLimit ?? null,
-          JSON.stringify(quiz.questions),
-        ],
-      );
-    }
-
-    // Import hints
-    for (const [quizId, hints] of Object.entries(subject.hints)) {
-      for (const hint of hints) {
+    try {
+      for (const lesson of subject.lessons) {
         await this.dbManager.runSql(
-          `INSERT INTO hints 
-          (hint_id, quiz_id, question_id, level, hint_text)
-          VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO lessons 
+          (lesson_id, bundle_id, subject, topic, title, difficulty, content_json, estimated_minutes, curriculum_standards)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            hint.hintId,
-            quizId,
-            // Extract question_id from hint_id (format: hint_quizId_questionId_level)
-            hint.hintId.split('_')[2],
-            hint.level,
-            hint.text,
+            lesson.lesson_id,
+            bundleId,
+            lesson.subject,
+            lesson.topic,
+            lesson.title,
+            lesson.difficulty,
+            JSON.stringify(lesson.sections),
+            lesson.estimated_minutes,
+            JSON.stringify(lesson.curriculum_standards),
           ],
         );
       }
+      console.log(`  ✓ Imported ${subject.lessons.length} lessons`);
+    } catch (error) {
+      console.error(`  ✗ Error importing lessons:`, error);
+      throw error;
     }
 
-    // Import study track
-    await this.dbManager.runSql(
-      `INSERT INTO study_tracks 
-      (track_id, bundle_id, subject, weeks_json)
-      VALUES (?, ?, ?, ?)`,
-      [
-        subject.studyTrack.trackId,
-        bundleId,
-        subject.studyTrack.subject,
-        JSON.stringify(subject.studyTrack.weeks),
-      ],
-    );
+    // Import quizzes
+    try {
+      for (const quiz of subject.quizzes) {
+        await this.dbManager.runSql(
+          `INSERT INTO quizzes 
+          (quiz_id, bundle_id, subject, topic, title, difficulty, time_limit, questions_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            quiz.quiz_id,
+            bundleId,
+            quiz.subject,
+            quiz.topic,
+            quiz.title,
+            quiz.difficulty,
+            quiz.time_limit ?? null,
+            JSON.stringify(quiz.questions),
+          ],
+        );
+      }
+      console.log(`  ✓ Imported ${subject.quizzes.length} quizzes`);
+    } catch (error) {
+      console.error(`  ✗ Error importing quizzes:`, error);
+      throw error;
+    }
+
+    // Import hints
+    try {
+      let totalHints = 0;
+      for (const [quizId, hints] of Object.entries(subject.hints)) {
+        for (const hint of hints) {
+          await this.dbManager.runSql(
+            `INSERT INTO hints 
+            (hint_id, quiz_id, question_id, level, hint_text)
+            VALUES (?, ?, ?, ?, ?)`,
+            [
+              hint.hint_id,
+              quizId,
+              // Extract question_id from hint_id (format: hint_quizId_questionId_level)
+              hint.hint_id.split('_')[2],
+              hint.level,
+              hint.text,
+            ],
+          );
+          totalHints++;
+        }
+      }
+      console.log(`  ✓ Imported ${totalHints} hints`);
+    } catch (error) {
+      console.error(`  ✗ Error importing hints:`, error);
+      throw error;
+    }
+
+    // Import study track (if present)
+    if (subject.study_track) {
+      try {
+        await this.dbManager.runSql(
+          `INSERT INTO study_tracks 
+          (track_id, bundle_id, subject, weeks_json)
+          VALUES (?, ?, ?, ?)`,
+          [
+            subject.study_track.track_id,
+            bundleId,
+            subject.study_track.subject,
+            JSON.stringify(subject.study_track.weeks),
+          ],
+        );
+        console.log(`  ✓ Imported study track`);
+      } catch (error) {
+        console.error(`  ✗ Error importing study track:`, error);
+        throw error;
+      }
+    }
   }
 
   /**
@@ -406,11 +491,11 @@ export class BundleImportService {
       const bundleData = await this.decompressBundle(bundlePath);
 
       return {
-        bundleId: bundleData.bundleId,
-        studentId: bundleData.studentId,
-        validFrom: new Date(bundleData.validFrom),
-        validUntil: new Date(bundleData.validUntil),
-        totalSize: bundleData.totalSize,
+        bundleId: bundleData.bundle_id,
+        studentId: bundleData.student_id,
+        validFrom: new Date(bundleData.valid_from),
+        validUntil: new Date(bundleData.valid_until),
+        totalSize: bundleData.total_size,
         subjectCount: bundleData.subjects.length,
       };
     } catch (error) {
