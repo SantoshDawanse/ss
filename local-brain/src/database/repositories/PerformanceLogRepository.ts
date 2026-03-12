@@ -171,6 +171,7 @@ export class PerformanceLogRepository extends BaseRepository<PerformanceLogRow> 
    */
   public parseLog(row: PerformanceLogRow): PerformanceLog {
     return {
+      logId: row.log_id,
       studentId: row.student_id,
       timestamp: new Date(row.timestamp),
       eventType: row.event_type,
@@ -178,6 +179,7 @@ export class PerformanceLogRepository extends BaseRepository<PerformanceLogRow> 
       subject: row.subject,
       topic: row.topic,
       data: JSON.parse(row.data_json),
+      synced: row.synced === 1,
     };
   }
 

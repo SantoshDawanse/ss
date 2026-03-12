@@ -67,6 +67,27 @@ export class LearningBundleRepository extends BaseRepository<LearningBundleRow> 
   }
 
   /**
+   * Find bundle by bundle_id.
+   */
+  public async findById(bundleId: string): Promise<LearningBundleRow | null> {
+    try {
+      const result = await this.query(
+        `SELECT * FROM ${this.tableName} WHERE bundle_id = ?`,
+        [bundleId],
+      );
+
+      if (result.length === 0) {
+        return null;
+      }
+
+      return this.rowToObject(result[0]);
+    } catch (error) {
+      console.error('Error finding bundle by ID:', error);
+      throw new Error(`Failed to find bundle by ID: ${error}`);
+    }
+  }
+
+  /**
    * Find active bundle for a student.
    */
   public async findActiveByStudent(

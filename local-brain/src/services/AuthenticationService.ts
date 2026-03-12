@@ -184,11 +184,18 @@ export class AuthenticationService {
   }
 
   /**
-   * Refresh access token using refresh token.
+   * Refresh access token using refresh token with automatic retry.
+   * Implements exponential backoff retry logic for transient failures.
    * 
+   * @param retryCount - Current retry attempt (internal use)
    * @returns New authentication tokens
+   * @throws Error if refresh fails after all retries
    */
-  public async refreshAccessToken(): Promise<AuthTokens> {
+  public async refreshAccessToken(retryCount: number = 0): Promise<AuthTokens> {
+    const MAX_RETRIES = 3;
+    const BASE_DELAY_MS = 1000; // 1 second base delay
+    const MAX_JITTER_MS = 1000; // 0-1000ms jitter
+
     if (!this.refreshToken) {
       throw new Error('No refresh token available');
     }
@@ -205,7 +212,23 @@ export class AuthenticationService {
       });
 
       if (!response.ok) {
-        // Refresh token is invalid or expired
+        // Check if this is a retryable error (5xx server errors)
+        if (response.status >= 500 && response.status < 600 && retryCount < MAX_RETRIES) {
+          // Calculate exponential backoff delay: 1s, 2s, 4s
+          const exponentialDelay = BASE_DELAY_MS * Math.pow(2, retryCount);
+          const jitter = Math.random() * MAX_JITTER_MS;
+          const totalDelay = Math.min(exponentialDelay + jitter, 30000); // Cap at 30 seconds
+
+          console.log(`Token refresh failed with ${response.status}, retrying in ${Math.round(totalDelay)}ms (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+
+          // Wait before retrying
+          await new Promise(resolve => setTimeout(resolve, totalDelay));
+
+          // Retry with incremented count
+          return this.refreshAccessToken(retryCount + 1);
+        }
+
+        // Non-retryable error (4xx client errors) or max retries reached
         await this.clearTokens();
         throw new Error('Token refresh failed - please login again');
       }
@@ -231,9 +254,34 @@ export class AuthenticationService {
       console.log('Token refresh successful');
       return tokens;
     } catch (error) {
+      // Check if this is a network error and we can retry
+      if (retryCount < MAX_RETRIES && this.isNetworkError(error)) {
+        const exponentialDelay = BASE_DELAY_MS * Math.pow(2, retryCount);
+        const jitter = Math.random() * MAX_JITTER_MS;
+        const totalDelay = Math.min(exponentialDelay + jitter, 30000);
+
+        console.log(`Token refresh network error, retrying in ${Math.round(totalDelay)}ms (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+
+        await new Promise(resolve => setTimeout(resolve, totalDelay));
+        return this.refreshAccessToken(retryCount + 1);
+      }
+
       console.error('Token refresh failed:', error);
       throw error;
     }
+  }
+
+  /**
+   * Check if an error is a network error that should be retried.
+   */
+  private isNetworkError(error: any): boolean {
+    // Network errors typically have these characteristics
+    return (
+      error instanceof TypeError ||
+      error.message?.includes('network') ||
+      error.message?.includes('timeout') ||
+      error.message?.includes('fetch')
+    );
   }
 
   /**
@@ -278,6 +326,16 @@ export class AuthenticationService {
    */
   public isAuthenticated(): boolean {
     return this.accessToken !== null && !this.isTokenExpired();
+  }
+
+  /**
+   * Set a temporary access token for sync operations
+   * This is used when we have a token from external context but user isn't fully authenticated
+   */
+  public setTemporaryToken(token: string, expiryHours: number = 24): void {
+    this.accessToken = token;
+    this.tokenExpiresAt = Date.now() + (expiryHours * 60 * 60 * 1000);
+    console.log('Temporary access token set for sync operations');
   }
 
   /**

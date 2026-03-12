@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,6 +22,7 @@ export default function QuizzesScreen() {
   const [filteredQuizzes, setFilteredQuizzes] = useState<Quiz[]>([]);
   const [completedQuizzes, setCompletedQuizzes] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
   const [selectedDifficulty, setSelectedDifficulty] = useState<string | null>(null);
 
@@ -106,6 +107,18 @@ export default function QuizzesScreen() {
       setCompletedQuizzes(completed);
     } catch (error) {
       console.error('Error loading completed quizzes:', error);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await loadQuizzes();
+      await loadCompletedQuizzes();
+    } catch (error) {
+      console.error('Error refreshing quizzes:', error);
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -229,6 +242,14 @@ export default function QuizzesScreen() {
           data={filteredQuizzes}
           keyExtractor={(item) => item.quizId}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl 
+              refreshing={refreshing} 
+              onRefresh={onRefresh}
+              colors={['#2196F3']} // Android
+              tintColor="#2196F3" // iOS
+            />
+          }
           renderItem={({ item }) => {
             const isCompleted = completedQuizzes.has(item.quizId);
             

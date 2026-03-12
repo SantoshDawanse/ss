@@ -352,13 +352,18 @@ const createMockDatabase = () => {
               }
             });
           } else {
-            // Handle WHERE with AND
-            const whereAndMatch = sql.match(/WHERE\s+(\w+)\s*=\s*\?\s+AND\s+(\w+)\s*=\s*\?/i);
-            if (whereAndMatch) {
-              const column1 = whereAndMatch[1];
-              const column2 = whereAndMatch[2];
+            // Handle WHERE with AND (including != operator for bundle archival)
+            const whereAndNotEqualMatch = sql.match(/WHERE\s+(\w+)\s*=\s*\?\s+AND\s+(\w+)\s*!=\s*\?\s+AND\s+(\w+)\s*=\s*\?/i);
+            if (whereAndNotEqualMatch) {
+              const column1 = whereAndNotEqualMatch[1];
+              const column2 = whereAndNotEqualMatch[2];
+              const column3 = whereAndNotEqualMatch[3];
               table.rows.forEach((row: any) => {
-                if (row[column1] === whereParams[0] && row[column2] === whereParams[1]) {
+                let condition1 = row[column1] === whereParams[0];
+                let condition2 = row[column2] !== whereParams[1]; // != operator
+                let condition3 = row[column3] === whereParams[2];
+                
+                if (condition1 && condition2 && condition3) {
                   setAssignments.forEach(({column, value}) => {
                     row[column] = value;
                   });
@@ -366,18 +371,33 @@ const createMockDatabase = () => {
                 }
               });
             } else {
-              // Handle simple WHERE clause
-              const whereMatch = sql.match(/WHERE\s+(\w+)\s*=\s*\?/i);
-              if (whereMatch) {
-                const whereColumn = whereMatch[1];
+              // Handle WHERE with AND (original simple case)
+              const whereAndMatch = sql.match(/WHERE\s+(\w+)\s*=\s*\?\s+AND\s+(\w+)\s*=\s*\?/i);
+              if (whereAndMatch) {
+                const column1 = whereAndMatch[1];
+                const column2 = whereAndMatch[2];
                 table.rows.forEach((row: any) => {
-                  if (row[whereColumn] === whereParams[0]) {
+                  if (row[column1] === whereParams[0] && row[column2] === whereParams[1]) {
                     setAssignments.forEach(({column, value}) => {
                       row[column] = value;
                     });
                     updatedCount++;
                   }
                 });
+              } else {
+                // Handle simple WHERE clause
+                const whereMatch = sql.match(/WHERE\s+(\w+)\s*=\s*\?/i);
+                if (whereMatch) {
+                  const whereColumn = whereMatch[1];
+                  table.rows.forEach((row: any) => {
+                    if (row[whereColumn] === whereParams[0]) {
+                      setAssignments.forEach(({column, value}) => {
+                        row[column] = value;
+                      });
+                      updatedCount++;
+                    }
+                  });
+                }
               }
             }
           }
@@ -485,10 +505,22 @@ const createMockDatabase = () => {
     },
 
     async withTransactionAsync(callback: any) {
-      // Execute callback directly - no transaction object passed
+      // Simulate transaction behavior with rollback on error
+      // Save current state of all tables
+      const beforeState = new Map();
+      this.tables.forEach((table, tableName) => {
+        beforeState.set(tableName, {
+          rows: new Map(table.rows),
+          autoIncrement: table.autoIncrement,
+        });
+      });
+      
       try {
         await callback();
+        // Transaction succeeded, keep changes
       } catch (error) {
+        // Transaction failed, rollback changes
+        this.tables = beforeState;
         throw error;
       }
     },

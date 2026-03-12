@@ -60,14 +60,14 @@ export class HintRepository extends BaseRepository<HintRow> {
   async findByQuizAndQuestion(
     quizId: string,
     questionId: string
-  ): Promise<Hint[]> {
+  ): Promise<HintRow[]> {
     try {
       const result = await this.query(
         'SELECT * FROM hints WHERE quiz_id = ? AND question_id = ? ORDER BY level',
         [quizId, questionId]
       );
 
-      return result.map(row => this.mapRowToHint(row));
+      return this.resultSetToArray(result);
     } catch (error) {
       console.error('Error finding hints:', error);
       throw new Error(`Failed to find hints: ${error}`);
@@ -89,7 +89,7 @@ export class HintRepository extends BaseRepository<HintRow> {
   /**
    * Map row to Hint.
    */
-  private mapRowToHint(row: HintRow): Hint {
+  mapRowToHint(row: HintRow): Hint {
     return {
       hintId: row.hint_id,
       level: row.level,

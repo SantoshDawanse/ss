@@ -3,9 +3,12 @@
  * for student performance data in the Local Brain.
  * 
  * Features:
- * - Immediate SQLite writes for crash recovery
+ * - Immediate SQLite writes for crash recovery (Requirement 16.7)
  * - Log batching for efficient sync
- * - Event tracking for all student interactions
+ * - Event tracking for all student interactions (Requirements 16.1-16.6)
+ * - Sets synced=0 for all new logs (Requirement 16.8)
+ * 
+ * Requirements: 16.1-16.8
  */
 
 import { PerformanceLog } from '../models';
@@ -29,6 +32,11 @@ export interface BatchedLogs {
 
 /**
  * Service for tracking student performance and managing logs.
+ * 
+ * This service implements the Performance_Tracking_Service requirements:
+ * - Creates performance logs for all student interaction events
+ * - Writes each log to SQLite immediately (not buffered) for crash recovery
+ * - Sets synced flag to 0 for new logs to enable sync workflow
  */
 export class PerformanceTrackingService {
   private dbManager: DatabaseManager;
@@ -69,7 +77,36 @@ export class PerformanceTrackingService {
   }
 
   /**
-   * Track lesson start event.
+   * Log lesson start event.
+   * Creates a 'lesson_start' log entry.
+   * 
+   * Requirement 16.1: WHEN a student starts a lesson, THE Performance_Tracking_Service 
+   * SHALL create a 'lesson_start' log
+   * 
+   * @param studentId - Student identifier
+   * @param lessonId - Lesson identifier
+   * @param subject - Subject name
+   * @param topic - Topic name
+   */
+  public async logLessonStart(
+    studentId: string,
+    lessonId: string,
+    subject: string,
+    topic: string,
+  ): Promise<void> {
+    await this.trackEvent({
+      studentId,
+      eventType: 'lesson_start',
+      contentId: lessonId,
+      subject,
+      topic,
+      data: {},
+    });
+  }
+
+  /**
+   * Track lesson start event (legacy method for backward compatibility).
+   * @deprecated Use logLessonStart instead
    */
   public async trackLessonStart(
     studentId: string,
@@ -88,7 +125,38 @@ export class PerformanceTrackingService {
   }
 
   /**
-   * Track lesson completion event.
+   * Log lesson completion event.
+   * Creates a 'lesson_complete' log entry with timeSpent.
+   * 
+   * Requirement 16.2: WHEN a student completes a lesson, THE Performance_Tracking_Service 
+   * SHALL create a 'lesson_complete' log with timeSpent
+   * 
+   * @param studentId - Student identifier
+   * @param lessonId - Lesson identifier
+   * @param subject - Subject name
+   * @param topic - Topic name
+   * @param timeSpent - Time spent in seconds
+   */
+  public async logLessonComplete(
+    studentId: string,
+    lessonId: string,
+    subject: string,
+    topic: string,
+    timeSpent: number,
+  ): Promise<void> {
+    await this.trackEvent({
+      studentId,
+      eventType: 'lesson_complete',
+      contentId: lessonId,
+      subject,
+      topic,
+      data: { timeSpent },
+    });
+  }
+
+  /**
+   * Track lesson completion event (legacy method for backward compatibility).
+   * @deprecated Use logLessonComplete instead
    */
   public async trackLessonComplete(
     studentId: string,
@@ -108,7 +176,36 @@ export class PerformanceTrackingService {
   }
 
   /**
-   * Track quiz start event.
+   * Log quiz start event.
+   * Creates a 'quiz_start' log entry.
+   * 
+   * Requirement 16.3: WHEN a student starts a quiz, THE Performance_Tracking_Service 
+   * SHALL create a 'quiz_start' log
+   * 
+   * @param studentId - Student identifier
+   * @param quizId - Quiz identifier
+   * @param subject - Subject name
+   * @param topic - Topic name
+   */
+  public async logQuizStart(
+    studentId: string,
+    quizId: string,
+    subject: string,
+    topic: string,
+  ): Promise<void> {
+    await this.trackEvent({
+      studentId,
+      eventType: 'quiz_start',
+      contentId: quizId,
+      subject,
+      topic,
+      data: {},
+    });
+  }
+
+  /**
+   * Track quiz start event (legacy method for backward compatibility).
+   * @deprecated Use logQuizStart instead
    */
   public async trackQuizStart(
     studentId: string,
@@ -127,7 +224,48 @@ export class PerformanceTrackingService {
   }
 
   /**
-   * Track quiz answer event.
+   * Log quiz answer event.
+   * Creates a 'quiz_answer' log entry with answer, correct, and hintsUsed.
+   * 
+   * Requirement 16.4: WHEN a student answers a quiz question, THE Performance_Tracking_Service 
+   * SHALL create a 'quiz_answer' log with answer, correct, and hintsUsed
+   * 
+   * @param studentId - Student identifier
+   * @param quizId - Quiz identifier
+   * @param questionId - Question identifier
+   * @param subject - Subject name
+   * @param topic - Topic name
+   * @param answer - Student's answer
+   * @param correct - Whether the answer was correct
+   * @param hintsUsed - Number of hints used
+   */
+  public async logQuizAnswer(
+    studentId: string,
+    quizId: string,
+    questionId: string,
+    subject: string,
+    topic: string,
+    answer: string,
+    correct: boolean,
+    hintsUsed: number,
+  ): Promise<void> {
+    await this.trackEvent({
+      studentId,
+      eventType: 'quiz_answer',
+      contentId: quizId,
+      subject,
+      topic,
+      data: {
+        answer,
+        correct,
+        hintsUsed,
+      },
+    });
+  }
+
+  /**
+   * Track quiz answer event (legacy method for backward compatibility).
+   * @deprecated Use logQuizAnswer instead
    */
   public async trackQuizAnswer(
     studentId: string,
@@ -153,7 +291,40 @@ export class PerformanceTrackingService {
   }
 
   /**
-   * Track quiz completion event.
+   * Log quiz completion event.
+   * Creates a 'quiz_complete' log entry with timeSpent and score.
+   * 
+   * Requirement 16.5: WHEN a student completes a quiz, THE Performance_Tracking_Service 
+   * SHALL create a 'quiz_complete' log with timeSpent
+   * 
+   * @param studentId - Student identifier
+   * @param quizId - Quiz identifier
+   * @param subject - Subject name
+   * @param topic - Topic name
+   * @param timeSpent - Time spent in seconds
+   * @param score - Quiz score (0-100)
+   */
+  public async logQuizComplete(
+    studentId: string,
+    quizId: string,
+    subject: string,
+    topic: string,
+    timeSpent: number,
+    score: number,
+  ): Promise<void> {
+    await this.trackEvent({
+      studentId,
+      eventType: 'quiz_complete',
+      contentId: quizId,
+      subject,
+      topic,
+      data: { timeSpent, score },
+    });
+  }
+
+  /**
+   * Track quiz completion event (legacy method for backward compatibility).
+   * @deprecated Use logQuizComplete instead
    */
   public async trackQuizComplete(
     studentId: string,
@@ -173,7 +344,40 @@ export class PerformanceTrackingService {
   }
 
   /**
-   * Track hint request event.
+   * Log hint requested event.
+   * Creates a 'hint_requested' log entry with hintLevel.
+   * 
+   * Requirement 16.6: WHEN a student requests a hint, THE Performance_Tracking_Service 
+   * SHALL create a 'hint_requested' log with hintLevel
+   * 
+   * @param studentId - Student identifier
+   * @param quizId - Quiz identifier
+   * @param questionId - Question identifier
+   * @param subject - Subject name
+   * @param topic - Topic name
+   * @param hintLevel - Hint level (1-3)
+   */
+  public async logHintRequested(
+    studentId: string,
+    quizId: string,
+    questionId: string,
+    subject: string,
+    topic: string,
+    hintLevel: number,
+  ): Promise<void> {
+    await this.trackEvent({
+      studentId,
+      eventType: 'hint_requested',
+      contentId: quizId,
+      subject,
+      topic,
+      data: { hintLevel },
+    });
+  }
+
+  /**
+   * Track hint request event (legacy method for backward compatibility).
+   * @deprecated Use logHintRequested instead
    */
   public async trackHintRequested(
     studentId: string,

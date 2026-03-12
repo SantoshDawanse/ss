@@ -46,6 +46,9 @@ export type {
   SyncAnalytics,
   OfflineAnalytics,
   ResourceUsage,
+  BundleGenerationMetrics,
+  StateTransitionLog,
+  AuditLogEntry,
 } from './MonitoringService';
 
 export { StudentProfileService } from './StudentProfileService';

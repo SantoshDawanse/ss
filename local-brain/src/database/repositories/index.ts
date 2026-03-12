@@ -12,3 +12,4 @@ export * from './PerformanceLogRepository';
 export * from './SyncSessionRepository';
 export * from './StudentStateRepository';
 export * from './StudyTrackRepository';
+export * from './DownloadProgressRepository';

@@ -22,9 +22,25 @@ import {
   SyncSessionRepository,
   StudentStateRepository,
   StudyTrackRepository,
+  DownloadProgressRepository,
 } from './repositories';
 
 type SQLiteDatabase = SQLite.SQLiteDatabase;
+
+/**
+ * Connection pool configuration
+ */
+interface ConnectionPoolConfig {
+  maxConnections: number;
+  minConnections: number;
+  acquireTimeout: number; // milliseconds
+}
+
+const DEFAULT_POOL_CONFIG: ConnectionPoolConfig = {
+  maxConnections: 5,
+  minConnections: 1,
+  acquireTimeout: 5000,
+};
 
 /**
  * DatabaseManager singleton class for managing SQLite database.
@@ -33,7 +49,16 @@ export class DatabaseManager {
   private static instance: DatabaseManager;
   private db: SQLiteDatabase | null = null;
   private config: DatabaseConfig;
+  private poolConfig: ConnectionPoolConfig;
   private isInitialized = false;
+  private connectionPool: SQLiteDatabase[] = [];
+  private availableConnections: SQLiteDatabase[] = [];
+  private activeConnections: Set<SQLiteDatabase> = new Set();
+  private waitingQueue: Array<{
+    resolve: (db: SQLiteDatabase) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+  }> = [];
 
   // Repository instances
   public learningBundleRepository!: LearningBundleRepository;
@@ -44,9 +69,11 @@ export class DatabaseManager {
   public syncSessionRepository!: SyncSessionRepository;
   public studentStateRepository!: StudentStateRepository;
   public studyTrackRepository!: StudyTrackRepository;
+  public downloadProgressRepository!: DownloadProgressRepository;
 
-  private constructor(config: DatabaseConfig = DEFAULT_DB_CONFIG) {
+  private constructor(config: DatabaseConfig = DEFAULT_DB_CONFIG, poolConfig: ConnectionPoolConfig = DEFAULT_POOL_CONFIG) {
     this.config = config;
+    this.poolConfig = poolConfig;
   }
 
   /**
@@ -54,9 +81,10 @@ export class DatabaseManager {
    */
   public static getInstance(
     config: DatabaseConfig = DEFAULT_DB_CONFIG,
+    poolConfig: ConnectionPoolConfig = DEFAULT_POOL_CONFIG,
   ): DatabaseManager {
     if (!DatabaseManager.instance) {
-      DatabaseManager.instance = new DatabaseManager(config);
+      DatabaseManager.instance = new DatabaseManager(config, poolConfig);
     }
     return DatabaseManager.instance;
   }
@@ -79,7 +107,7 @@ export class DatabaseManager {
     }
 
     try {
-      // Open database connection with Expo SQLite
+      // Open primary database connection with Expo SQLite
       this.db = await SQLite.openDatabaseAsync(this.config.name);
 
       // Enable SQLCipher encryption if configured
@@ -96,11 +124,14 @@ export class DatabaseManager {
       // Create indexes
       await this.createIndexes();
 
+      // Initialize connection pool
+      await this.initializeConnectionPool();
+
       // Initialize repositories
       this.initializeRepositories();
 
       this.isInitialized = true;
-      console.log('Database initialized successfully');
+      console.log('Database initialized successfully with connection pooling');
     } catch (error) {
       console.error('Failed to initialize database:', error);
       throw new Error(`Database initialization failed: ${error}`);
@@ -148,6 +179,7 @@ export class DatabaseManager {
       await this.db.execAsync(CREATE_TABLES.SYNC_SESSIONS);
       await this.db.execAsync(CREATE_TABLES.STUDENT_STATE);
       await this.db.execAsync(CREATE_TABLES.STUDY_TRACKS);
+      await this.db.execAsync(CREATE_TABLES.DOWNLOAD_PROGRESS);
 
       console.log('Database tables created successfully');
     } catch (error) {
@@ -189,6 +221,7 @@ export class DatabaseManager {
     this.syncSessionRepository = new SyncSessionRepository();
     this.studentStateRepository = new StudentStateRepository();
     this.studyTrackRepository = new StudyTrackRepository();
+    this.downloadProgressRepository = new DownloadProgressRepository();
 
     // Set database manager for all repositories
     this.learningBundleRepository.setDatabaseManager(this);
@@ -199,6 +232,7 @@ export class DatabaseManager {
     this.syncSessionRepository.setDatabaseManager(this);
     this.studentStateRepository.setDatabaseManager(this);
     this.studyTrackRepository.setDatabaseManager(this);
+    this.downloadProgressRepository.setDatabaseManager(this);
 
     console.log('Repositories initialized');
   }
@@ -215,27 +249,195 @@ export class DatabaseManager {
   }
 
   /**
+   * Acquire a connection from the pool.
+   * Creates new connections up to maxConnections limit.
+   * Waits for available connection if pool is exhausted.
+   */
+  private async acquireConnection(): Promise<SQLiteDatabase> {
+    // If there's an available connection, return it
+    if (this.availableConnections.length > 0) {
+      const conn = this.availableConnections.pop()!;
+      this.activeConnections.add(conn);
+      return conn;
+    }
+
+    // If we can create more connections, create one
+    if (this.connectionPool.length < this.poolConfig.maxConnections) {
+      const newConn = await SQLite.openDatabaseAsync(this.config.name);
+      
+      // Apply encryption if configured
+      if (this.config.encryption && this.config.encryptionKey) {
+        await newConn.execAsync(`PRAGMA key = '${this.config.encryptionKey}';`);
+      }
+      
+      // Enable foreign keys
+      await newConn.execAsync('PRAGMA foreign_keys = ON;');
+      
+      this.connectionPool.push(newConn);
+      this.activeConnections.add(newConn);
+      return newConn;
+    }
+
+    // Pool is exhausted, wait for a connection to be released
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const index = this.waitingQueue.findIndex(item => item.resolve === resolve);
+        if (index !== -1) {
+          this.waitingQueue.splice(index, 1);
+        }
+        reject(new Error(`Connection acquire timeout after ${this.poolConfig.acquireTimeout}ms`));
+      }, this.poolConfig.acquireTimeout);
+
+      this.waitingQueue.push({ resolve, reject, timeout });
+    });
+  }
+
+  /**
+   * Release a connection back to the pool.
+   */
+  private releaseConnection(conn: SQLiteDatabase): void {
+    this.activeConnections.delete(conn);
+
+    // If there are waiting requests, give the connection to the next one
+    if (this.waitingQueue.length > 0) {
+      const waiter = this.waitingQueue.shift()!;
+      clearTimeout(waiter.timeout);
+      this.activeConnections.add(conn);
+      waiter.resolve(conn);
+    } else {
+      // Return to available pool
+      this.availableConnections.push(conn);
+    }
+  }
+
+  /**
+   * Initialize the connection pool with minimum connections.
+   */
+  private async initializeConnectionPool(): Promise<void> {
+    // Create minimum number of connections
+    for (let i = 0; i < this.poolConfig.minConnections; i++) {
+      const conn = await SQLite.openDatabaseAsync(this.config.name);
+      
+      // Apply encryption if configured
+      if (this.config.encryption && this.config.encryptionKey) {
+        await conn.execAsync(`PRAGMA key = '${this.config.encryptionKey}';`);
+      }
+      
+      // Enable foreign keys
+      await conn.execAsync('PRAGMA foreign_keys = ON;');
+      
+      this.connectionPool.push(conn);
+      this.availableConnections.push(conn);
+    }
+    
+    console.log(`Connection pool initialized with ${this.poolConfig.minConnections} connections`);
+  }
+
+  /**
+   * Close all connections in the pool.
+   */
+  private async closeConnectionPool(): Promise<void> {
+    // Close all connections
+    for (const conn of this.connectionPool) {
+      try {
+        await conn.closeAsync();
+      } catch (error) {
+        console.error('Error closing pooled connection:', error);
+      }
+    }
+    
+    this.connectionPool = [];
+    this.availableConnections = [];
+    this.activeConnections.clear();
+    
+    // Reject all waiting requests
+    for (const waiter of this.waitingQueue) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error('Connection pool closed'));
+    }
+    this.waitingQueue = [];
+    
+    console.log('Connection pool closed');
+  }
+
+  /**
    * Execute a SQL query with parameters.
    * Returns all rows from the result.
+   * Includes retry logic for transient errors.
    */
   public async executeSql(
     sql: string,
     params: any[] = [],
   ): Promise<any[]> {
     const db = this.getDatabase();
-    return db.getAllAsync(sql, params);
+    return this.retryOnTransientError(async () => {
+      return db.getAllAsync(sql, params);
+    });
   }
 
   /**
    * Execute a SQL statement (INSERT, UPDATE, DELETE).
    * Returns the result with changes info.
+   * Includes retry logic for transient errors.
    */
   public async runSql(
     sql: string,
     params: any[] = [],
   ): Promise<SQLite.SQLiteRunResult> {
     const db = this.getDatabase();
-    return db.runAsync(sql, params);
+    return this.retryOnTransientError(async () => {
+      return db.runAsync(sql, params);
+    });
+  }
+
+  /**
+   * Retry a database operation on transient errors (e.g., database locked).
+   * Implements exponential backoff with jitter.
+   */
+  private async retryOnTransientError<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+  ): Promise<T> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        lastError = error;
+        
+        // Check if error is transient (database locked, busy, etc.)
+        const isTransient = this.isTransientError(error);
+        
+        if (!isTransient || attempt === maxRetries - 1) {
+          throw error;
+        }
+        
+        // Calculate backoff delay with exponential backoff and jitter
+        const baseDelay = Math.pow(2, attempt) * 100; // 100ms, 200ms, 400ms
+        const jitter = Math.random() * 100; // 0-100ms jitter
+        const delay = Math.min(baseDelay + jitter, 5000); // Cap at 5 seconds
+        
+        console.warn(`Database operation failed (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms:`, error.message);
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    throw lastError || new Error('Database operation failed after retries');
+  }
+
+  /**
+   * Check if an error is transient and should be retried.
+   */
+  private isTransientError(error: any): boolean {
+    const message = error?.message?.toLowerCase() || '';
+    return (
+      message.includes('database is locked') ||
+      message.includes('database is busy') ||
+      message.includes('disk i/o error') ||
+      message.includes('temporary failure')
+    );
   }
 
   /**
@@ -250,15 +452,97 @@ export class DatabaseManager {
   }
 
   /**
-   * Close database connection.
+   * Begin a new transaction manually.
+   * Note: For Expo SQLite, prefer using executeInTransaction() or transaction()
+   * which properly handle transaction lifecycle.
+   * 
+   * This method is provided for compatibility but has limitations with Expo SQLite.
+   */
+  public async beginTransaction(): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      await db.execAsync('BEGIN IMMEDIATE TRANSACTION;');
+    } catch (error) {
+      console.error('Failed to begin transaction:', error);
+      throw new Error(`Begin transaction failed: ${error}`);
+    }
+  }
+
+  /**
+   * Commit the current transaction.
+   * Note: For Expo SQLite, prefer using executeInTransaction() or transaction()
+   * which properly handle transaction lifecycle.
+   */
+  public async commit(): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      await db.execAsync('COMMIT;');
+    } catch (error) {
+      console.error('Failed to commit transaction:', error);
+      throw new Error(`Commit failed: ${error}`);
+    }
+  }
+
+  /**
+   * Rollback the current transaction.
+   * Note: For Expo SQLite, prefer using executeInTransaction() or transaction()
+   * which properly handle transaction lifecycle.
+   */
+  public async rollback(): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      await db.execAsync('ROLLBACK;');
+    } catch (error) {
+      console.error('Failed to rollback transaction:', error);
+      throw new Error(`Rollback failed: ${error}`);
+    }
+  }
+
+  /**
+   * Execute a callback within a transaction with automatic commit/rollback.
+   * This is the recommended method for atomic operations with Expo SQLite.
+   * 
+   * @param callback - Function to execute within the transaction
+   * @returns The result of the callback function
+   * @throws Error if transaction fails
+   * 
+   * @example
+   * ```typescript
+   * const result = await dbManager.executeInTransaction(async () => {
+   *   await dbManager.runSql('INSERT INTO lessons ...');
+   *   await dbManager.runSql('INSERT INTO quizzes ...');
+   *   return { success: true };
+   * });
+   * ```
+   */
+  public async executeInTransaction<T>(
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const db = this.getDatabase();
+    
+    let result: T;
+    
+    await db.withTransactionAsync(async () => {
+      result = await callback();
+    });
+    
+    return result!;
+  }
+
+  /**
+   * Close database connection and connection pool.
    */
   public async close(): Promise<void> {
     if (this.db) {
       await this.db.closeAsync();
       this.db = null;
-      this.isInitialized = false;
-      console.log('Database connection closed');
     }
+    
+    // Close connection pool
+    await this.closeConnectionPool();
+    
+    this.isInitialized = false;
+    console.log('Database connection and pool closed');
   }
 
   /**
@@ -304,6 +588,12 @@ export class DatabaseManager {
       const stats: DatabaseStats = {
         tables: {},
         totalRecords: 0,
+        connectionPool: {
+          total: this.connectionPool.length,
+          active: this.activeConnections.size,
+          available: this.availableConnections.length,
+          waiting: this.waitingQueue.length,
+        },
       };
 
       // Count records in each table
@@ -316,6 +606,7 @@ export class DatabaseManager {
         'sync_sessions',
         'student_state',
         'study_tracks',
+        'download_progress',
       ];
 
       for (const table of tables) {
@@ -348,6 +639,12 @@ export class DatabaseManager {
 export interface DatabaseStats {
   tables: Record<string, number>;
   totalRecords: number;
+  connectionPool?: {
+    total: number;
+    active: number;
+    available: number;
+    waiting: number;
+  };
 }
 
 /**

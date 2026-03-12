@@ -86,23 +86,21 @@ export class BundleImportService {
    * Import and validate a learning bundle.
    * 
    * Steps:
-   * 1. Verify checksum
+   * 1. Verify checksum (Task 7.2: Calculate SHA-256, compare, delete on mismatch, log values)
    * 2. Verify signature (RSA-2048)
    * 3. Decompress bundle
    * 4. Import to database
    * 5. Archive old bundles
    * 
-   * Requirements: 4.8, 7.7
+   * Requirements: 7.1-7.6
    */
   public async importBundle(bundlePath: string, expectedChecksum: string): Promise<void> {
     try {
       console.log('Starting bundle import:', bundlePath);
 
-      // Step 1: Verify checksum
-      const checksumValid = await this.verifyChecksum(bundlePath, expectedChecksum);
-      if (!checksumValid) {
-        throw new Error('Bundle checksum verification failed');
-      }
+      // Step 1: Verify checksum (throws error on mismatch, deletes file)
+      // Task 7.2: Checksum verification with file deletion and logging
+      await this.verifyChecksum(bundlePath, expectedChecksum);
       console.log('✓ Checksum verified');
 
       // Step 2: Decompress bundle
@@ -133,8 +131,14 @@ export class BundleImportService {
 
   /**
    * Verify bundle checksum using SHA-256.
-   * Requirement 4.8: Data integrity validation
+   * Requirement 7.1-7.6: Data integrity validation
    * Uses crypto-js for reliable binary hashing.
+   * 
+   * Task 7.2 Implementation:
+   * - Calculate SHA-256 hash using crypto-js
+   * - Compare calculated vs expected checksum
+   * - Delete file on mismatch and throw error
+   * - Log both expected and actual values on failure
    */
   private async verifyChecksum(filePath: string, expectedChecksum: string): Promise<boolean> {
     try {
@@ -150,10 +154,40 @@ export class BundleImportService {
       const hash = CryptoJS.SHA256(wordArray);
       
       // Convert hash to hex string
-      const hashHex = hash.toString(CryptoJS.enc.Hex);
+      const actualChecksum = hash.toString(CryptoJS.enc.Hex);
 
-      return hashHex.toLowerCase() === expectedChecksum.toLowerCase();
+      // Compare checksums (case-insensitive)
+      const isMatch = actualChecksum.toLowerCase() === expectedChecksum.toLowerCase();
+
+      if (!isMatch) {
+        // Log both expected and actual values on failure (Requirement 7.5)
+        console.error('Checksum mismatch detected:');
+        console.error(`  Expected: ${expectedChecksum}`);
+        console.error(`  Actual:   ${actualChecksum}`);
+        console.error(`  File:     ${filePath}`);
+
+        // Delete file on mismatch (Requirement 7.4)
+        try {
+          await FileSystem.deleteAsync(filePath, { idempotent: true });
+          console.log(`Deleted corrupted file: ${filePath}`);
+        } catch (deleteError) {
+          console.error(`Failed to delete corrupted file: ${deleteError}`);
+        }
+
+        // Throw error with details (Requirement 7.4)
+        throw new Error(
+          `Checksum verification failed. Expected: ${expectedChecksum}, Actual: ${actualChecksum}`
+        );
+      }
+
+      return true;
     } catch (error) {
+      // If error is already our checksum mismatch error, re-throw it
+      if (error instanceof Error && error.message.includes('Checksum verification failed')) {
+        throw error;
+      }
+      
+      // For other errors, log and return false
       console.error('Checksum verification error:', error);
       return false;
     }
@@ -244,43 +278,209 @@ export class BundleImportService {
    * Validate bundle data structure.
    */
   private validateBundleStructure(bundleData: BundleData): void {
-    console.log(`Validating bundle structure...`);
-    console.log(`bundle_id: "${bundleData.bundle_id}"`);
-    console.log(`student_id: "${bundleData.student_id}"`);
-    console.log(`checksum: "${bundleData.checksum}" (type: ${typeof bundleData.checksum}, length: ${bundleData.checksum?.length})`);
-    
-    if (!bundleData.bundle_id) {
-      throw new Error('Bundle missing bundle_id');
+      console.log(`Validating bundle structure...`);
+      console.log(`bundle_id: "${bundleData.bundle_id}"`);
+      console.log(`student_id: "${bundleData.student_id}"`);
+      console.log(`checksum: "${bundleData.checksum}" (type: ${typeof bundleData.checksum}, length: ${bundleData.checksum?.length})`);
+
+      // Validate required fields exist and have correct types
+      this.validateRequiredField(bundleData, 'bundle_id', 'string');
+      this.validateRequiredField(bundleData, 'student_id', 'string');
+      this.validateRequiredField(bundleData, 'valid_from', 'string');
+      this.validateRequiredField(bundleData, 'valid_until', 'string');
+      this.validateRequiredField(bundleData, 'total_size', 'number');
+      this.validateRequiredField(bundleData, 'checksum', 'string');
+      this.validateRequiredField(bundleData, 'subjects', 'array');
+
+      // Validate non-empty strings
+      if (bundleData.bundle_id.trim() === '') {
+        throw new Error('Bundle bundle_id cannot be empty');
+      }
+      if (bundleData.student_id.trim() === '') {
+        throw new Error('Bundle student_id cannot be empty');
+      }
+
+      // Validate date strings are valid ISO 8601 format
+      this.validateDateString(bundleData.valid_from, 'valid_from');
+      this.validateDateString(bundleData.valid_until, 'valid_until');
+
+      // Validate total_size is positive
+      if (bundleData.total_size <= 0) {
+        throw new Error('Bundle total_size must be a positive number');
+      }
+
+      // Note: checksum field exists but is empty string in the compressed bundle
+      // The actual checksum is verified separately before decompression
+      if (bundleData.checksum === undefined || bundleData.checksum === null) {
+        throw new Error('Bundle missing checksum field');
+      }
+
+      console.log(`✓ Bundle structure validation passed`);
+
+      // Validate each subject
+      for (let i = 0; i < bundleData.subjects.length; i++) {
+        const subject = bundleData.subjects[i];
+        this.validateSubjectStructure(subject, i);
+      }
     }
-    if (!bundleData.student_id) {
-      throw new Error('Bundle missing student_id');
-    }
-    if (!bundleData.valid_from || !bundleData.valid_until) {
-      throw new Error('Bundle missing validity dates');
-    }
-    // Note: checksum field exists but is empty string in the compressed bundle
-    // The actual checksum is verified separately before decompression
-    if (bundleData.checksum === undefined || bundleData.checksum === null) {
-      throw new Error('Bundle missing checksum field');
-    }
-    if (!Array.isArray(bundleData.subjects)) {
-      throw new Error('Bundle missing subjects array');
+  private validateRequiredField(obj: any, fieldName: string, expectedType: string): void {
+    if (!(fieldName in obj)) {
+      throw new Error(`Bundle missing required field: ${fieldName}`);
     }
 
-    console.log(`✓ Bundle structure validation passed`);
+    const value = obj[fieldName];
+    const actualType = expectedType === 'array' ? (Array.isArray(value) ? 'array' : typeof value) : typeof value;
 
-    // Validate each subject
-    for (const subject of bundleData.subjects) {
-      if (!subject.subject) {
-        throw new Error('Subject missing name');
+    if (actualType !== expectedType) {
+      throw new Error(`Bundle field ${fieldName} must be ${expectedType}, got ${actualType}`);
+    }
+  }
+
+  private validateDateString(dateStr: string, fieldName: string): void {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) {
+      throw new Error(`Bundle field ${fieldName} must be a valid ISO 8601 date string, got: ${dateStr}`);
+    }
+  }
+
+  private validateSubjectStructure(subject: SubjectData, index: number): void {
+    const subjectPrefix = `subjects[${index}]`;
+
+    // Validate subject has required fields
+    this.validateRequiredField(subject, 'subject', 'string');
+    this.validateRequiredField(subject, 'lessons', 'array');
+    this.validateRequiredField(subject, 'quizzes', 'array');
+    this.validateRequiredField(subject, 'hints', 'object');
+
+    // Validate subject name is non-empty
+    if (subject.subject.trim() === '') {
+      throw new Error(`${subjectPrefix}.subject cannot be empty`);
+    }
+
+    // Validate hints structure - should be Record<string, RawHint[]>
+    if (Array.isArray(subject.hints)) {
+      throw new Error(`${subjectPrefix}.hints must be an object (Record<string, RawHint[]>), got array`);
+    }
+
+    // Validate each hint entry
+    for (const [quizId, hints] of Object.entries(subject.hints)) {
+      if (typeof quizId !== 'string' || quizId.trim() === '') {
+        throw new Error(`${subjectPrefix}.hints contains invalid quiz ID: ${quizId}`);
       }
-      if (!Array.isArray(subject.lessons)) {
-        throw new Error(`Subject ${subject.subject} missing lessons array`);
+      if (!Array.isArray(hints)) {
+        throw new Error(`${subjectPrefix}.hints[${quizId}] must be an array, got ${typeof hints}`);
       }
-      if (!Array.isArray(subject.quizzes)) {
-        throw new Error(`Subject ${subject.subject} missing quizzes array`);
+    }
+
+    // Validate lessons array structure
+    for (let i = 0; i < subject.lessons.length; i++) {
+      this.validateLessonStructure(subject.lessons[i], `${subjectPrefix}.lessons[${i}]`);
+    }
+
+    // Validate quizzes array structure
+    for (let i = 0; i < subject.quizzes.length; i++) {
+      this.validateQuizStructure(subject.quizzes[i], `${subjectPrefix}.quizzes[${i}]`);
+    }
+
+    // study_track is optional, but if present, validate it
+    if (subject.study_track !== undefined) {
+      this.validateStudyTrackStructure(subject.study_track, `${subjectPrefix}.study_track`);
+    }
+  }
+
+  private validateLessonStructure(lesson: RawLesson, prefix: string): void {
+    this.validateRequiredField(lesson, 'lesson_id', 'string');
+    this.validateRequiredField(lesson, 'subject', 'string');
+    this.validateRequiredField(lesson, 'topic', 'string');
+    this.validateRequiredField(lesson, 'title', 'string');
+    this.validateRequiredField(lesson, 'difficulty', 'string');
+    this.validateRequiredField(lesson, 'sections', 'array');
+    this.validateRequiredField(lesson, 'estimated_minutes', 'number');
+    this.validateRequiredField(lesson, 'curriculum_standards', 'array');
+
+    // Validate non-empty strings
+    if (lesson.lesson_id.trim() === '') {
+      throw new Error(`${prefix}.lesson_id cannot be empty`);
+    }
+    if (lesson.subject.trim() === '') {
+      throw new Error(`${prefix}.subject cannot be empty`);
+    }
+    if (lesson.topic.trim() === '') {
+      throw new Error(`${prefix}.topic cannot be empty`);
+    }
+    if (lesson.title.trim() === '') {
+      throw new Error(`${prefix}.title cannot be empty`);
+    }
+
+    // Validate difficulty enum
+    const validDifficulties = ['easy', 'medium', 'hard'];
+    if (!validDifficulties.includes(lesson.difficulty)) {
+      throw new Error(`${prefix}.difficulty must be one of: ${validDifficulties.join(', ')}, got: ${lesson.difficulty}`);
+    }
+
+    // Validate estimated_minutes is positive
+    if (lesson.estimated_minutes <= 0) {
+      throw new Error(`${prefix}.estimated_minutes must be a positive number, got: ${lesson.estimated_minutes}`);
+    }
+  }
+
+  private validateQuizStructure(quiz: RawQuiz, prefix: string): void {
+    this.validateRequiredField(quiz, 'quiz_id', 'string');
+    this.validateRequiredField(quiz, 'subject', 'string');
+    this.validateRequiredField(quiz, 'topic', 'string');
+    this.validateRequiredField(quiz, 'title', 'string');
+    this.validateRequiredField(quiz, 'difficulty', 'string');
+    this.validateRequiredField(quiz, 'questions', 'array');
+
+    // Validate non-empty strings
+    if (quiz.quiz_id.trim() === '') {
+      throw new Error(`${prefix}.quiz_id cannot be empty`);
+    }
+    if (quiz.subject.trim() === '') {
+      throw new Error(`${prefix}.subject cannot be empty`);
+    }
+    if (quiz.topic.trim() === '') {
+      throw new Error(`${prefix}.topic cannot be empty`);
+    }
+    if (quiz.title.trim() === '') {
+      throw new Error(`${prefix}.title cannot be empty`);
+    }
+
+    // Validate difficulty enum
+    const validDifficulties = ['easy', 'medium', 'hard'];
+    if (!validDifficulties.includes(quiz.difficulty)) {
+      throw new Error(`${prefix}.difficulty must be one of: ${validDifficulties.join(', ')}, got: ${quiz.difficulty}`);
+    }
+
+    // Validate time_limit if present
+    if (quiz.time_limit !== undefined && quiz.time_limit !== null) {
+      if (typeof quiz.time_limit !== 'number' || quiz.time_limit <= 0) {
+        throw new Error(`${prefix}.time_limit must be a positive number or null, got: ${quiz.time_limit}`);
       }
-      // study_track is optional, so don't validate it
+    }
+
+    // Validate questions array is not empty
+    if (quiz.questions.length === 0) {
+      throw new Error(`${prefix}.questions array cannot be empty`);
+    }
+  }
+
+  private validateStudyTrackStructure(studyTrack: RawStudyTrack, prefix: string): void {
+    this.validateRequiredField(studyTrack, 'track_id', 'string');
+    this.validateRequiredField(studyTrack, 'subject', 'string');
+    this.validateRequiredField(studyTrack, 'weeks', 'array');
+
+    // Validate non-empty strings
+    if (studyTrack.track_id.trim() === '') {
+      throw new Error(`${prefix}.track_id cannot be empty`);
+    }
+    if (studyTrack.subject.trim() === '') {
+      throw new Error(`${prefix}.subject cannot be empty`);
+    }
+
+    // Validate weeks array structure
+    if (studyTrack.weeks.length === 0) {
+      throw new Error(`${prefix}.weeks array cannot be empty`);
     }
   }
 
@@ -454,11 +654,8 @@ export class BundleImportService {
    */
   public async validateBundle(bundlePath: string, expectedChecksum: string): Promise<boolean> {
     try {
-      // Verify checksum
-      const checksumValid = await this.verifyChecksum(bundlePath, expectedChecksum);
-      if (!checksumValid) {
-        return false;
-      }
+      // Verify checksum (throws on mismatch)
+      await this.verifyChecksum(bundlePath, expectedChecksum);
 
       // Try to decompress and parse
       const bundleData = await this.decompressBundle(bundlePath);

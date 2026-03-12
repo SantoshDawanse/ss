@@ -16,6 +16,8 @@ export enum MetricType {
   CRASH = 'crash',
   SYNC_SUCCESS = 'sync_success',
   SYNC_FAILURE = 'sync_failure',
+  BUNDLE_GENERATION = 'bundle_generation',
+  STATE_TRANSITION = 'state_transition',
   OFFLINE_DURATION = 'offline_duration',
   STORAGE_USAGE = 'storage_usage',
   BATTERY_USAGE = 'battery_usage',
@@ -79,6 +81,37 @@ export interface ResourceUsage {
 }
 
 /**
+ * Bundle generation metrics
+ */
+export interface BundleGenerationMetrics {
+  latency_ms: number;
+  success: boolean;
+  size_bytes?: number;
+  content_count?: number;
+  error?: string;
+}
+
+/**
+ * State transition log entry
+ */
+export interface StateTransitionLog {
+  timestamp: Date;
+  fromState: string;
+  toState: string;
+  context?: Record<string, any>;
+}
+
+/**
+ * Audit log entry
+ */
+export interface AuditLogEntry {
+  timestamp: Date;
+  event: string;
+  severity: 'low' | 'medium' | 'high';
+  details: Record<string, any>;
+}
+
+/**
  * Storage keys for persisting monitoring data
  */
 const STORAGE_KEYS = {
@@ -87,6 +120,8 @@ const STORAGE_KEYS = {
   SYNC_ANALYTICS: '@monitoring/sync_analytics',
   OFFLINE_ANALYTICS: '@monitoring/offline_analytics',
   LAST_BATTERY_LEVEL: '@monitoring/last_battery_level',
+  AUDIT_LOG: '@monitoring/audit_log',
+  STATE_TRANSITIONS: '@monitoring/state_transitions',
 };
 
 /**
@@ -291,6 +326,12 @@ export class MonitoringService {
         STORAGE_KEYS.SYNC_ANALYTICS,
         JSON.stringify(analytics)
       );
+
+      // Log to audit log
+      await this.logToAudit('sync_success', 'low', {
+        duration,
+        timestamp: new Date().toISOString(),
+      });
     } catch (error) {
       console.error('[MonitoringService] Failed to record sync success:', error);
     }
@@ -313,9 +354,152 @@ export class MonitoringService {
         STORAGE_KEYS.SYNC_ANALYTICS,
         JSON.stringify(analytics)
       );
+
+      // Log to audit log with appropriate severity
+      const severity = this.determineSeverity(error);
+      await this.logToAudit('sync_failure', severity, {
+        error,
+        timestamp: new Date().toISOString(),
+      });
     } catch (error) {
       console.error('[MonitoringService] Failed to record sync failure:', error);
     }
+  }
+
+  /**
+   * Record bundle generation metrics
+   */
+  public async recordBundleGeneration(metrics: BundleGenerationMetrics): Promise<void> {
+    try {
+      await this.recordEvent(MetricType.BUNDLE_GENERATION, metrics);
+
+      // Log to audit log
+      await this.logToAudit('bundle_generation', metrics.success ? 'low' : 'medium', {
+        latency_ms: metrics.latency_ms,
+        success: metrics.success,
+        size_bytes: metrics.size_bytes,
+        content_count: metrics.content_count,
+        error: metrics.error,
+        timestamp: new Date().toISOString(),
+      });
+
+      console.log('[MonitoringService] Bundle generation recorded:', metrics);
+    } catch (error) {
+      console.error('[MonitoringService] Failed to record bundle generation:', error);
+    }
+  }
+
+  /**
+   * Log state transition
+   */
+  public async logStateTransition(
+    fromState: string,
+    toState: string,
+    context?: Record<string, any>
+  ): Promise<void> {
+    try {
+      const transition: StateTransitionLog = {
+        timestamp: new Date(),
+        fromState,
+        toState,
+        context,
+      };
+
+      // Record as event
+      await this.recordEvent(MetricType.STATE_TRANSITION, {
+        fromState,
+        toState,
+        context,
+      });
+
+      // Store in state transitions log
+      const transitionsJson = await AsyncStorage.getItem(STORAGE_KEYS.STATE_TRANSITIONS);
+      const transitions: StateTransitionLog[] = transitionsJson
+        ? JSON.parse(transitionsJson)
+        : [];
+
+      transitions.push(transition);
+
+      // Keep only last 500 transitions
+      const trimmedTransitions = transitions.slice(-500);
+
+      await AsyncStorage.setItem(
+        STORAGE_KEYS.STATE_TRANSITIONS,
+        JSON.stringify(trimmedTransitions)
+      );
+
+      console.log(
+        `[MonitoringService] State transition: ${fromState} -> ${toState}`,
+        context
+      );
+    } catch (error) {
+      console.error('[MonitoringService] Failed to log state transition:', error);
+    }
+  }
+
+  /**
+   * Log to audit log
+   */
+  public async logToAudit(
+    event: string,
+    severity: 'low' | 'medium' | 'high',
+    details: Record<string, any>
+  ): Promise<void> {
+    try {
+      const entry: AuditLogEntry = {
+        timestamp: new Date(),
+        event,
+        severity,
+        details,
+      };
+
+      // Get existing audit log
+      const auditLogJson = await AsyncStorage.getItem(STORAGE_KEYS.AUDIT_LOG);
+      const auditLog: AuditLogEntry[] = auditLogJson ? JSON.parse(auditLogJson) : [];
+
+      // Add new entry
+      auditLog.push(entry);
+
+      // Keep only last 1000 entries
+      const trimmedLog = auditLog.slice(-1000);
+
+      // Save back to storage
+      await AsyncStorage.setItem(STORAGE_KEYS.AUDIT_LOG, JSON.stringify(trimmedLog));
+
+      console.log(`[MonitoringService] Audit log [${severity}]: ${event}`, details);
+    } catch (error) {
+      console.error('[MonitoringService] Failed to log to audit:', error);
+    }
+  }
+
+  /**
+   * Determine severity level based on error message
+   */
+  private determineSeverity(error: string): 'low' | 'medium' | 'high' {
+    const errorLower = error.toLowerCase();
+
+    // High severity: critical errors
+    if (
+      errorLower.includes('database corruption') ||
+      errorLower.includes('data loss') ||
+      errorLower.includes('security') ||
+      errorLower.includes('authentication failed')
+    ) {
+      return 'high';
+    }
+
+    // Medium severity: errors requiring user action
+    if (
+      errorLower.includes('disk space') ||
+      errorLower.includes('permission denied') ||
+      errorLower.includes('checksum mismatch') ||
+      errorLower.includes('import failed')
+    ) {
+      return 'medium';
+    }
+
+    // Low severity: transient errors
+    return 'low';
   }
 
   /**
@@ -544,6 +728,44 @@ export class MonitoringService {
   }
 
   /**
+   * Get audit log entries
+   */
+  public async getAuditLog(): Promise<AuditLogEntry[]> {
+    try {
+      const auditLogJson = await AsyncStorage.getItem(STORAGE_KEYS.AUDIT_LOG);
+      if (auditLogJson) {
+        const entries = JSON.parse(auditLogJson);
+        return entries.map((e: any) => ({
+          ...e,
+          timestamp: new Date(e.timestamp),
+        }));
+      }
+    } catch (error) {
+      console.error('[MonitoringService] Failed to get audit log:', error);
+    }
+    return [];
+  }
+
+  /**
+   * Get state transition history
+   */
+  public async getStateTransitions(): Promise<StateTransitionLog[]> {
+    try {
+      const transitionsJson = await AsyncStorage.getItem(STORAGE_KEYS.STATE_TRANSITIONS);
+      if (transitionsJson) {
+        const transitions = JSON.parse(transitionsJson);
+        return transitions.map((t: any) => ({
+          ...t,
+          timestamp: new Date(t.timestamp),
+        }));
+      }
+    } catch (error) {
+      console.error('[MonitoringService] Failed to get state transitions:', error);
+    }
+    return [];
+  }
+
+  /**
    * Clear all monitoring data
    */
   public async clearAllData(): Promise<void> {
@@ -554,6 +776,8 @@ export class MonitoringService {
         STORAGE_KEYS.SYNC_ANALYTICS,
         STORAGE_KEYS.OFFLINE_ANALYTICS,
         STORAGE_KEYS.LAST_BATTERY_LEVEL,
+        STORAGE_KEYS.AUDIT_LOG,
+        STORAGE_KEYS.STATE_TRANSITIONS,
       ]);
       console.log('[MonitoringService] All monitoring data cleared');
     } catch (error) {

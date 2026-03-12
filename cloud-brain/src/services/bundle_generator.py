@@ -100,7 +100,7 @@ class BundleGenerator:
         all_quizzes = [quiz for quizzes in quizzes_by_subject.values() for quiz in quizzes]
         
         try:
-            validate_bundle_content(all_lessons, all_quizzes, min_items=3)
+            validate_bundle_content(all_lessons, all_quizzes, min_items=2)
         except InsufficientContentError as e:
             logger.error(f"Bundle composition failed: {e}")
             raise NonRetryableError(

@@ -161,8 +161,16 @@ def upload(event: dict, context: LambdaContext) -> dict:
             logs_data = _decompress_logs(request.logs)
             performance_logs = _validate_logs(logs_data) if logs_data else []
             logger.info(f"Received {len(performance_logs)} performance logs")
+            
+            # Debug: log the type and first log entry
+            if performance_logs:
+                logger.info(f"Performance logs type: {type(performance_logs)}")
+                logger.info(f"First log type: {type(performance_logs[0])}")
+                logger.info(f"First log: {performance_logs[0]}")
+            
         except Exception as e:
             logger.error(f"Log processing failed: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             sync_repo.update_session_status(
                 session.session_id, SyncStatus.FAILED, str(e)
             )
@@ -198,13 +206,15 @@ def upload(event: dict, context: LambdaContext) -> dict:
 
         # Update knowledge model with new performance data
         try:
+            logger.info(f"Starting knowledge model update for student {student_id}")
             personalization_engine = PersonalizationEngine(knowledge_repo)
             knowledge_model = knowledge_repo.get_knowledge_model(student_id)
             
             if knowledge_model:
                 # Update existing model with new performance logs
-                updated_model = personalization_engine.update_knowledge_model(
-                    knowledge_model, performance_logs
+                logger.info(f"Updating existing knowledge model with {len(performance_logs)} logs")
+                updated_model = personalization_engine.analyze_performance_logs(
+                    student_id, performance_logs
                 )
                 knowledge_repo.save_knowledge_model(updated_model)
                 logger.info(f"Updated knowledge model for student {student_id}")
@@ -212,11 +222,16 @@ def upload(event: dict, context: LambdaContext) -> dict:
                 # First-time user: Create initial knowledge model
                 logger.info(f"Creating initial knowledge model for new student {student_id}")
                 initial_model = knowledge_repo.create_initial_knowledge_model(student_id)
-                knowledge_repo.save_knowledge_model(initial_model)
-                logger.info(f"Created initial knowledge model for student {student_id}")
+                # Analyze logs with the initial model
+                logger.info(f"Analyzing {len(performance_logs)} logs for new student")
+                updated_model = personalization_engine.analyze_performance_logs(
+                    student_id, performance_logs
+                )
+                knowledge_repo.save_knowledge_model(updated_model)
+                logger.info(f"Created and updated knowledge model for student {student_id}")
         except Exception as e:
             logger.error(f"Failed to update knowledge model: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Don't fail the sync - we can still generate content with default model
 
         # Update checkpoint after knowledge model update
@@ -427,8 +442,13 @@ def download(event: dict, context: LambdaContext) -> dict:
                 knowledge_repo = KnowledgeModelRepository()
                 bundle_generator = BundleGenerator()
                 
-                # Get knowledge model
+                # Get knowledge model - ensure it exists
                 knowledge_model = knowledge_repo.get_knowledge_model(student_id)
+                if not knowledge_model:
+                    # Create initial knowledge model if it doesn't exist
+                    logger.info(f"Creating knowledge model for bundle generation: {student_id}")
+                    knowledge_model = knowledge_repo.create_initial_knowledge_model(student_id)
+                    knowledge_repo.save_knowledge_model(knowledge_model)
                 
                 # Update checkpoint for bundle generation
                 sync_repo.update_checkpoint(

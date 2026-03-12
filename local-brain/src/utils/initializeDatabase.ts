@@ -10,12 +10,13 @@ export async function initializeDatabase(dbManager: DatabaseManager, studentId: 
   try {
     console.log('Initializing database with sample data...');
 
-    // Check if bundle already exists by bundle_id (to avoid UNIQUE constraint violation)
-    const existingBundleById = await dbManager.learningBundleRepository.findById(
-      sampleBundle.bundleId
+    // Check if bundle already exists by bundle_id using direct SQL query
+    const existingBundleResult = await dbManager.executeSql(
+      'SELECT * FROM learning_bundles WHERE bundle_id = ?',
+      [sampleBundle.bundleId]
     );
 
-    if (existingBundleById) {
+    if (existingBundleResult.length > 0) {
       console.log('Sample bundle already exists in database, skipping initialization');
       return;
     }

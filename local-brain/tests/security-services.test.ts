@@ -199,6 +199,119 @@ describe('AuthenticationService', () => {
   it('should throw error when not authenticated', async () => {
     await expect(authService.getAccessToken()).rejects.toThrow('Not authenticated');
   });
+
+  it('should set temporary token for testing', () => {
+    authService.setTemporaryToken('temp_token', 2);
+    
+    const authState = authService.getAuthState();
+    expect(authState.accessToken).toBe('temp_token');
+    expect(authState.isAuthenticated).toBe(true);
+  });
+
+  it('should refresh token with retry on 500 error', async () => {
+    // Login first
+    await authService.login({
+      studentId: 'test_student',
+      password: 'test_password',
+    });
+
+    // Mock fetch to fail with 500 twice, then succeed
+    let callCount = 0;
+    global.fetch = jest.fn(() => {
+      callCount++;
+      if (callCount <= 2) {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'Server error' }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          accessToken: 'new_access_token',
+          refreshToken: 'new_refresh_token',
+          expiresIn: 86400,
+        }),
+      });
+    }) as any;
+
+    const tokens = await authService.refreshAccessToken();
+    
+    expect(tokens.accessToken).toBe('new_access_token');
+    expect(callCount).toBe(3); // Failed twice, succeeded on third attempt
+  });
+
+  it('should fail after max retries on 500 error', async () => {
+    // Login first
+    await authService.login({
+      studentId: 'test_student',
+      password: 'test_password',
+    });
+
+    // Mock fetch to always fail with 500
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: 'Server error' }),
+      })
+    ) as any;
+
+    await expect(authService.refreshAccessToken()).rejects.toThrow('Token refresh failed - please login again');
+  }, 10000); // Increase timeout to 10 seconds to account for retry delays
+
+  it('should not retry on 401 error', async () => {
+    // Login first
+    await authService.login({
+      studentId: 'test_student',
+      password: 'test_password',
+    });
+
+    // Mock fetch to fail with 401 (non-retryable)
+    let callCount = 0;
+    global.fetch = jest.fn(() => {
+      callCount++;
+      return Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: 'Unauthorized' }),
+      });
+    }) as any;
+
+    await expect(authService.refreshAccessToken()).rejects.toThrow('Token refresh failed - please login again');
+    expect(callCount).toBe(1); // Should not retry on 401
+  });
+
+  it('should retry on network error', async () => {
+    // Login first
+    await authService.login({
+      studentId: 'test_student',
+      password: 'test_password',
+    });
+
+    // Mock fetch to fail with network error twice, then succeed
+    let callCount = 0;
+    global.fetch = jest.fn(() => {
+      callCount++;
+      if (callCount <= 2) {
+        return Promise.reject(new TypeError('Network request failed'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          accessToken: 'new_access_token',
+          refreshToken: 'new_refresh_token',
+          expiresIn: 86400,
+        }),
+      });
+    }) as any;
+
+    const tokens = await authService.refreshAccessToken();
+    
+    expect(tokens.accessToken).toBe('new_access_token');
+    expect(callCount).toBe(3); // Failed twice, succeeded on third attempt
+  }, 10000); // Increase timeout to 10 seconds to account for retry delays
 });
 
 describe('SecureNetworkService', () => {
@@ -245,6 +358,20 @@ describe('SecureNetworkService', () => {
     expect(response.data).toEqual({ success: true });
   });
 
+  it('should make secure PUT request', async () => {
+    const response = await networkService.put('/test', { data: 'updated' });
+    
+    expect(response.ok).toBe(true);
+    expect(response.data).toEqual({ success: true });
+  });
+
+  it('should make secure DELETE request', async () => {
+    const response = await networkService.delete('/test');
+    
+    expect(response.ok).toBe(true);
+    expect(response.data).toEqual({ success: true });
+  });
+
   it('should reject non-HTTPS URLs', async () => {
     const response = await networkService.secureRequest('http://insecure.com/api');
     
@@ -261,9 +388,12 @@ describe('SecureNetworkService', () => {
     expect(tlsInfo).toHaveProperty('pinningEnabled');
   });
 
-  it.skip('should handle request timeout', async () => {
-    // Skip: Timeout testing is complex with mocked fetch
-    // In real usage, the timeout mechanism works correctly
+  it('should support configurable timeout', async () => {
+    // Test that timeout option is accepted and passed through
+    const response = await networkService.get('/test', { timeout: 5000 });
+    
+    expect(response.ok).toBe(true);
+    // Verify the timeout option is accepted without errors
   });
 
   it('should enable/disable certificate pinning', () => {

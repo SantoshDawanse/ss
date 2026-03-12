@@ -32,9 +32,11 @@ describe('Property 6: Offline Content Delivery', () => {
     
     // Create service and repositories (repositories use singleton internally)
     contentService = new ContentDeliveryService(dbManager);
-    bundleRepo = new LearningBundleRepository();
-    lessonRepo = new LessonRepository();
-    quizRepo = new QuizRepository(dbManager);
+    
+    // Use repositories from DatabaseManager (already initialized)
+    bundleRepo = dbManager.learningBundleRepository;
+    lessonRepo = dbManager.lessonRepository;
+    quizRepo = dbManager.quizRepository;
     
     // Increment counter for unique IDs
     testCounter++;
@@ -216,14 +218,17 @@ describe('Property 6: Offline Content Delivery', () => {
           // Test: Verify quizzes can be retrieved by ID (core offline delivery capability)
           // This tests that content stored locally can be accessed without network
           for (const quiz of uniqueQuizzes) {
-            const retrievedQuiz = await quizRepo.findById(quiz.quizId);
+            const retrievedQuizRow = await quizRepo.findById(quiz.quizId);
             
             // Verify: Quiz was successfully retrieved from local storage
-            expect(retrievedQuiz).not.toBeNull();
-            expect(retrievedQuiz?.quizId).toBe(quiz.quizId);
-            expect(retrievedQuiz?.subject).toBe(quiz.subject);
-            expect(retrievedQuiz?.title).toBe(quiz.title);
-            expect(retrievedQuiz?.questions).toHaveLength(quiz.questions.length);
+            expect(retrievedQuizRow).not.toBeNull();
+            
+            // Parse the quiz row to get the Quiz object
+            const retrievedQuiz = quizRepo.parseQuiz(retrievedQuizRow!);
+            expect(retrievedQuiz.quizId).toBe(quiz.quizId);
+            expect(retrievedQuiz.subject).toBe(quiz.subject);
+            expect(retrievedQuiz.title).toBe(quiz.title);
+            expect(retrievedQuiz.questions).toHaveLength(quiz.questions.length);
           }
         }
       ),

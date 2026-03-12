@@ -89,6 +89,7 @@ export const CREATE_TABLES = {
   SYNC_SESSIONS: `
     CREATE TABLE IF NOT EXISTS sync_sessions (
       session_id TEXT PRIMARY KEY,
+      backend_session_id TEXT,
       start_time INTEGER NOT NULL,
       end_time INTEGER,
       status TEXT NOT NULL CHECK(status IN (
@@ -118,6 +119,20 @@ export const CREATE_TABLES = {
       subject TEXT NOT NULL,
       weeks_json TEXT NOT NULL,
       FOREIGN KEY (bundle_id) REFERENCES learning_bundles(bundle_id) ON DELETE CASCADE
+    );
+  `,
+
+  // Download progress table (for resume capability across app restarts)
+  DOWNLOAD_PROGRESS: `
+    CREATE TABLE IF NOT EXISTS download_progress (
+      session_id TEXT PRIMARY KEY,
+      bundle_url TEXT NOT NULL,
+      total_bytes INTEGER NOT NULL,
+      downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+      checksum TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
     );
   `,
 };
@@ -192,12 +207,24 @@ export const CREATE_INDEXES = {
     CREATE INDEX IF NOT EXISTS idx_tracks_bundle 
     ON study_tracks(bundle_id, subject);
   `,
+
+  // Download progress indexes
+  IDX_DOWNLOAD_PROGRESS_SESSION: `
+    CREATE INDEX IF NOT EXISTS idx_download_progress_session 
+    ON download_progress(session_id);
+  `,
+
+  IDX_DOWNLOAD_PROGRESS_UPDATED: `
+    CREATE INDEX IF NOT EXISTS idx_download_progress_updated 
+    ON download_progress(updated_at DESC);
+  `,
 };
 
 /**
  * SQL statements to drop all tables (for testing/reset).
  */
 export const DROP_TABLES = {
+  DOWNLOAD_PROGRESS: 'DROP TABLE IF EXISTS download_progress;',
   STUDY_TRACKS: 'DROP TABLE IF EXISTS study_tracks;',
   HINTS: 'DROP TABLE IF EXISTS hints;',
   QUIZZES: 'DROP TABLE IF EXISTS quizzes;',

@@ -1,4 +1,4 @@
-import { ScrollView, View, Text, Alert } from 'react-native';
+import { ScrollView, View, Text, Alert, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '@/src/contexts/AppContext';
@@ -16,6 +16,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { isInitialized, error, studentId } = useApp();
   const [isSyncing, setIsSyncing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const handleSync = async () => {
     try {
@@ -68,7 +69,7 @@ export default function HomeScreen() {
             const data = await response.json();
             if (data.authToken) {
               authToken = data.authToken;
-              await SecureStore.setItemAsync('authToken', authToken);
+              await SecureStore.setItemAsync('authToken', data.authToken);
               console.log('Auth token obtained and stored successfully');
             } else {
               Alert.alert(
@@ -98,6 +99,16 @@ export default function HomeScreen() {
       }
       
       const publicKey = 'demo_public_key';
+      
+      // Ensure we have a valid auth token before proceeding
+      if (!authToken) {
+        Alert.alert(
+          'Authentication Error',
+          'Could not obtain authentication token. Please try again.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
       
       const syncService = new SyncOrchestratorService(studentId, authToken, publicKey);
       
@@ -146,10 +157,26 @@ export default function HomeScreen() {
     }
   };
 
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      // Trigger sync on pull-to-refresh
+      await handleSync();
+    } catch (error) {
+      console.log('Refresh sync completed with status');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   if (error) {
     return (
       <SafeAreaView className="flex-1 bg-neutral-50">
-        <ScrollView>
+        <ScrollView
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+        >
           <View className="p-6">
             <Card variant="elevated" padding="lg">
               <Text className="text-2xl font-bold text-error-500 mb-3">Error</Text>
@@ -167,7 +194,17 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-neutral-50" edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl 
+            refreshing={refreshing} 
+            onRefresh={onRefresh}
+            colors={['#2196F3']} // Android
+            tintColor="#2196F3" // iOS
+          />
+        }
+      >
         <View className="px-6 pt-6 pb-4">
           {/* Header */}
           <View className="mb-6">

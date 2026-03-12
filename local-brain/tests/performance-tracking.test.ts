@@ -37,6 +37,84 @@ describe('PerformanceTrackingService', () => {
     (DatabaseManager as any).resetInstance();
   });
 
+  describe('Requirement Validation', () => {
+    it('should create lesson_start log (Requirement 16.1)', async () => {
+      await service.logLessonStart('student-1', 'lesson-1', 'Math', 'Algebra');
+      
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('lesson_start');
+    });
+
+    it('should create lesson_complete log with timeSpent (Requirement 16.2)', async () => {
+      await service.logLessonComplete('student-1', 'lesson-1', 'Math', 'Algebra', 1800);
+      
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('lesson_complete');
+      expect(logs[0].data.timeSpent).toBe(1800);
+    });
+
+    it('should create quiz_start log (Requirement 16.3)', async () => {
+      await service.logQuizStart('student-1', 'quiz-1', 'Math', 'Algebra');
+      
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('quiz_start');
+    });
+
+    it('should create quiz_answer log with answer, correct, and hintsUsed (Requirement 16.4)', async () => {
+      await service.logQuizAnswer('student-1', 'quiz-1', 'q1', 'Math', 'Algebra', 'A', true, 2);
+      
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('quiz_answer');
+      expect(logs[0].data.answer).toBe('A');
+      expect(logs[0].data.correct).toBe(true);
+      expect(logs[0].data.hintsUsed).toBe(2);
+    });
+
+    it('should create quiz_complete log with timeSpent (Requirement 16.5)', async () => {
+      await service.logQuizComplete('student-1', 'quiz-1', 'Math', 'Algebra', 900, 85);
+      
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('quiz_complete');
+      expect(logs[0].data.timeSpent).toBe(900);
+      expect(logs[0].data.score).toBe(85);
+    });
+
+    it('should create hint_requested log with hintLevel (Requirement 16.6)', async () => {
+      await service.logHintRequested('student-1', 'quiz-1', 'q1', 'Math', 'Algebra', 2);
+      
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('hint_requested');
+      expect(logs[0].data.hintLevel).toBe(2);
+    });
+
+    it('should write each log to SQLite immediately (Requirement 16.7)', async () => {
+      // Track event
+      await service.logLessonStart('student-1', 'lesson-1', 'Math', 'Algebra');
+      
+      // Immediately verify it's in database (not buffered)
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+    });
+
+    it('should set synced=0 for all new logs (Requirement 16.8)', async () => {
+      await service.logLessonStart('student-1', 'lesson-1', 'Math', 'Algebra');
+      await service.logQuizAnswer('student-1', 'quiz-1', 'q1', 'Math', 'Algebra', 'A', true, 0);
+      await service.logHintRequested('student-1', 'quiz-1', 'q1', 'Math', 'Algebra', 1);
+      
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(3);
+      logs.forEach(log => {
+        expect(log.synced).toBe(false);
+      });
+    });
+  });
+
   describe('Event Tracking', () => {
     it('should track lesson start event', async () => {
       const logId = await service.trackLessonStart(
@@ -54,6 +132,22 @@ describe('PerformanceTrackingService', () => {
       expect(log?.content_id).toBe('lesson-1');
       expect(log?.subject).toBe('Mathematics');
       expect(log?.synced).toBe(0);
+    });
+
+    it('should log lesson start event (new interface)', async () => {
+      await service.logLessonStart(
+        'student-1',
+        'lesson-1',
+        'Mathematics',
+        'Algebra',
+      );
+
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('lesson_start');
+      expect(logs[0].contentId).toBe('lesson-1');
+      expect(logs[0].subject).toBe('Mathematics');
+      expect(logs[0].synced).toBe(false);
     });
 
     it('should track lesson complete event with time spent', async () => {
@@ -75,6 +169,21 @@ describe('PerformanceTrackingService', () => {
       expect(data.timeSpent).toBe(1800);
     });
 
+    it('should log lesson complete event with time spent (new interface)', async () => {
+      await service.logLessonComplete(
+        'student-1',
+        'lesson-1',
+        'Mathematics',
+        'Algebra',
+        1800, // 30 minutes
+      );
+
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('lesson_complete');
+      expect(logs[0].data.timeSpent).toBe(1800);
+    });
+
     it('should track quiz start event', async () => {
       const logId = await service.trackQuizStart(
         'student-1',
@@ -89,6 +198,20 @@ describe('PerformanceTrackingService', () => {
       expect(log).toBeDefined();
       expect(log?.event_type).toBe('quiz_start');
       expect(log?.content_id).toBe('quiz-1');
+    });
+
+    it('should log quiz start event (new interface)', async () => {
+      await service.logQuizStart(
+        'student-1',
+        'quiz-1',
+        'Science',
+        'Physics',
+      );
+
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('quiz_start');
+      expect(logs[0].contentId).toBe('quiz-1');
     });
 
     it('should track quiz answer event with correctness', async () => {
@@ -114,6 +237,26 @@ describe('PerformanceTrackingService', () => {
       expect(data.hintsUsed).toBe(2);
     });
 
+    it('should log quiz answer event with all parameters (new interface)', async () => {
+      await service.logQuizAnswer(
+        'student-1',
+        'quiz-1',
+        'question-1',
+        'Science',
+        'Physics',
+        'A',
+        true,
+        2, // used 2 hints
+      );
+
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('quiz_answer');
+      expect(logs[0].data.answer).toBe('A');
+      expect(logs[0].data.correct).toBe(true);
+      expect(logs[0].data.hintsUsed).toBe(2);
+    });
+
     it('should track quiz complete event', async () => {
       const logId = await service.trackQuizComplete(
         'student-1',
@@ -133,6 +276,23 @@ describe('PerformanceTrackingService', () => {
       expect(data.timeSpent).toBe(900);
     });
 
+    it('should log quiz complete event with timeSpent and score (new interface)', async () => {
+      await service.logQuizComplete(
+        'student-1',
+        'quiz-1',
+        'Science',
+        'Physics',
+        900, // 15 minutes
+        85, // score
+      );
+
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('quiz_complete');
+      expect(logs[0].data.timeSpent).toBe(900);
+      expect(logs[0].data.score).toBe(85);
+    });
+
     it('should track hint requested event', async () => {
       const logId = await service.trackHintRequested(
         'student-1',
@@ -150,6 +310,22 @@ describe('PerformanceTrackingService', () => {
       
       const data = JSON.parse(log!.data_json);
       expect(data.hintsUsed).toBe(2);
+    });
+
+    it('should log hint requested event with hintLevel (new interface)', async () => {
+      await service.logHintRequested(
+        'student-1',
+        'quiz-1',
+        'question-1',
+        'Science',
+        'Physics',
+        2, // hint level 2
+      );
+
+      const logs = await service.getUnsyncedLogs('student-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0].eventType).toBe('hint_requested');
+      expect(logs[0].data.hintLevel).toBe(2);
     });
 
     it('should track generic event with custom data', async () => {

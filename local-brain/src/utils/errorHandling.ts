@@ -1,5 +1,6 @@
 /**
  * Error handling utilities for Local Brain.
+ * Implements Requirement 26: Error Handling and User Feedback
  */
 
 /**
@@ -26,10 +27,15 @@ export enum ErrorCode {
   NETWORK_ERROR = 'NETWORK_ERROR',
   UPLOAD_FAILED = 'UPLOAD_FAILED',
   DOWNLOAD_FAILED = 'DOWNLOAD_FAILED',
+  CONNECTIVITY_FAILED = 'CONNECTIVITY_FAILED',
   
   // Authentication errors
   AUTH_FAILED = 'AUTH_FAILED',
   AUTH_TOKEN_EXPIRED = 'AUTH_TOKEN_EXPIRED',
+  
+  // Sync errors
+  SYNC_FAILED = 'SYNC_FAILED',
+  IMPORT_FAILED = 'IMPORT_FAILED',
   
   // Generic errors
   INTERNAL_ERROR = 'INTERNAL_ERROR',
@@ -37,15 +43,83 @@ export enum ErrorCode {
 }
 
 /**
+ * Error severity levels for logging and monitoring.
+ */
+export type ErrorSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+/**
+ * Error categories for classification and handling.
+ */
+export type ErrorCategory = 
+  | 'network' 
+  | 'storage' 
+  | 'database' 
+  | 'content' 
+  | 'auth' 
+  | 'sync' 
+  | 'system';
+
+/**
  * Structured error response format.
  */
 export interface ErrorResponse {
   errorCode: string;
   message: string;
+  userMessage: string; // User-friendly message for UI display
   retryable: boolean;
   retryAfter?: number; // seconds
   details?: Record<string, any>;
+  category: ErrorCategory;
+  severity: ErrorSeverity;
 }
+
+/**
+ * Error event for UI notification.
+ */
+export interface ErrorEvent {
+  errorCode: string;
+  userMessage: string;
+  category: ErrorCategory;
+  severity: ErrorSeverity;
+  timestamp: number;
+  retryable: boolean;
+  retryAfter?: number;
+  details?: Record<string, any>;
+}
+
+/**
+ * Error event listener type.
+ */
+export type ErrorEventListener = (event: ErrorEvent) => void;
+
+/**
+ * Global error event emitter for UI notifications.
+ */
+class ErrorEventEmitter {
+  private listeners: Set<ErrorEventListener> = new Set();
+
+  addListener(listener: ErrorEventListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  removeAllListeners(): void {
+    this.listeners.clear();
+  }
+
+  emit(event: ErrorEvent): void {
+    this.listeners.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error('Error in error event listener:', error);
+      }
+    });
+  }
+}
+
+// Global error event emitter instance
+export const errorEventEmitter = new ErrorEventEmitter();
 
 /**
  * Retryable error class.
@@ -154,18 +228,208 @@ export function exponentialBackoffRetry<T>(
 }
 
 /**
+ * Handle connectivity check failures.
+ * Requirement 26.1: Display user-friendly message for connectivity failures
+ */
+export function handleConnectivityFailureError(): ErrorResponse {
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.CONNECTIVITY_FAILED,
+    message: 'Network connectivity check failed',
+    userMessage: 'No internet connection. Sync will retry when online.',
+    retryable: true,
+    retryAfter: 30,
+    category: 'network',
+    severity: 'medium',
+    details: {
+      action: 'Check internet connection and try again',
+    },
+  };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
+}
+
+/**
+ * Handle upload failure errors.
+ * Requirement 26.2: Display user-friendly message for upload failures
+ */
+export function handleUploadFailureError(
+  error: Error,
+  attempt: number
+): ErrorResponse {
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.UPLOAD_FAILED,
+    message: `Upload failed on attempt ${attempt}: ${error.message}`,
+    userMessage: 'Upload failed. Your progress is saved and will sync later.',
+    retryable: true,
+    retryAfter: Math.min(5 * Math.pow(2, attempt - 1), 30),
+    category: 'network',
+    severity: 'medium',
+    details: {
+      error: error.message,
+      attempt,
+      action: 'Logs queued for next sync. Operation continues.',
+    },
+  };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
+}
+
+/**
+ * Handle download failure errors.
+ * Requirement 26.3: Display user-friendly message for download failures
+ */
+export function handleDownloadFailureError(
+  error: Error,
+  attempt: number
+): ErrorResponse {
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.DOWNLOAD_FAILED,
+    message: `Download failed on attempt ${attempt}: ${error.message}`,
+    userMessage: 'Download failed. Please try again when you have a stable connection.',
+    retryable: true,
+    retryAfter: Math.min(5 * Math.pow(2, attempt - 1), 30),
+    category: 'network',
+    severity: 'medium',
+    details: {
+      error: error.message,
+      attempt,
+      action: 'Retrying download with exponential backoff',
+    },
+  };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
+}
+
+/**
+ * Handle checksum mismatch errors.
+ * Requirement 26.4: Display user-friendly message for checksum failures
+ */
+export function handleChecksumMismatchError(
+  expectedChecksum: string,
+  actualChecksum: string
+): ErrorResponse {
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.CHECKSUM_MISMATCH,
+    message: `Bundle checksum mismatch: expected ${expectedChecksum}, got ${actualChecksum}`,
+    userMessage: 'Content verification failed. Retrying download.',
+    retryable: true,
+    retryAfter: 5,
+    category: 'content',
+    severity: 'high',
+    details: {
+      expectedChecksum,
+      actualChecksum,
+      action: 'Re-downloading bundle from last checkpoint',
+    },
+  };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
+}
+
+/**
+ * Handle authentication failure errors.
+ * Requirement 26.5: Display user-friendly message for authentication failures
+ */
+export function handleAuthenticationFailureError(): ErrorResponse {
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.AUTH_FAILED,
+    message: 'Authentication failed - token expired or invalid',
+    userMessage: 'Session expired. Please log in again.',
+    retryable: false,
+    category: 'auth',
+    severity: 'high',
+    details: {
+      action: 'User needs to re-authenticate',
+    },
+  };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
+}
+
+/**
+ * Handle bundle import failure errors.
+ * Requirement 26.6: Display user-friendly message for import failures
+ */
+export function handleBundleImportFailureError(
+  error: Error,
+  bundleId?: string
+): ErrorResponse {
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.IMPORT_FAILED,
+    message: `Bundle import failed: ${error.message}`,
+    userMessage: 'Content import failed. Please contact support.',
+    retryable: false,
+    category: 'content',
+    severity: 'high',
+    details: {
+      error: error.message,
+      bundleId,
+      action: 'Contact support for assistance',
+    },
+  };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
+}
+
+/**
+ * Handle network timeout errors.
+ */
+export function handleNetworkTimeoutError(
+  operation: string,
+  attempt: number
+): ErrorResponse {
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.NETWORK_TIMEOUT,
+    message: `Network timeout during ${operation} (attempt ${attempt})`,
+    userMessage: 'Connection timeout. Retrying...',
+    retryable: true,
+    retryAfter: Math.min(5 * Math.pow(2, attempt - 1), 30),
+    category: 'network',
+    severity: 'medium',
+    details: {
+      operation,
+      attempt,
+      action: 'Retrying with exponential backoff',
+    },
+  };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
+}
+
+/**
  * Handle content not found errors.
  */
 export function handleContentNotFoundError(contentId: string): ErrorResponse {
-  return {
+  const response: ErrorResponse = {
     errorCode: ErrorCode.CONTENT_NOT_FOUND,
-    message: 'Content not found. Please sync to download new content.',
+    message: `Content not found: ${contentId}`,
+    userMessage: 'Content not found. Please sync to download new content.',
     retryable: false,
+    category: 'content',
+    severity: 'medium',
     details: {
       contentId,
       suggestion: 'Sync with Cloud Brain when connectivity is available',
     },
   };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
 }
 
 /**
@@ -175,17 +439,24 @@ export function handleCorruptedBundleError(
   bundleId: string,
   reason: string
 ): ErrorResponse {
-  return {
+  const response: ErrorResponse = {
     errorCode: ErrorCode.CORRUPTED_BUNDLE,
-    message: 'Bundle is corrupted. Re-downloading...',
+    message: `Bundle corrupted: ${bundleId} - ${reason}`,
+    userMessage: 'Bundle is corrupted. Re-downloading...',
     retryable: true,
     retryAfter: 5,
+    category: 'content',
+    severity: 'high',
     details: {
       bundleId,
       reason,
       action: 'Validating checksum and re-downloading if needed',
     },
   };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
 }
 
 /**
@@ -196,47 +467,44 @@ export function handleDatabaseError(
   operation: string
 ): ErrorResponse {
   const errorStr = error.message.toLowerCase();
+  let errorCode = ErrorCode.DATABASE_ERROR;
+  let userMessage = 'Database error occurred. Retrying...';
+  let severity: ErrorSeverity = 'medium';
   
   // Check for corruption
   if (errorStr.includes('corrupt') || errorStr.includes('malformed')) {
-    return {
-      errorCode: ErrorCode.DATABASE_CORRUPTED,
-      message: 'Database corrupted. Attempting recovery...',
-      retryable: true,
-      retryAfter: 10,
-      details: {
-        operation,
-        error: error.message,
-        action: 'Attempting database recovery or fallback to read-only mode',
-      },
-    };
+    errorCode = ErrorCode.DATABASE_CORRUPTED;
+    userMessage = 'Database corrupted. Attempting recovery...';
+    severity = 'high';
   }
   
   // Check for read-only mode
   if (errorStr.includes('readonly') || errorStr.includes('read only')) {
-    return {
-      errorCode: ErrorCode.DATABASE_READONLY,
-      message: 'Database in read-only mode',
-      retryable: false,
-      details: {
-        operation,
-        error: error.message,
-        action: 'Operating in read-only mode. Some features may be limited.',
-      },
-    };
+    errorCode = ErrorCode.DATABASE_READONLY;
+    userMessage = 'Database in read-only mode. Some features may be limited.';
+    severity = 'medium';
   }
   
-  // Generic database error
-  return {
-    errorCode: ErrorCode.DATABASE_ERROR,
-    message: 'Database operation failed',
-    retryable: true,
-    retryAfter: 3,
+  const response: ErrorResponse = {
+    errorCode,
+    message: `Database error during ${operation}: ${error.message}`,
+    userMessage,
+    retryable: errorCode !== ErrorCode.DATABASE_READONLY,
+    retryAfter: errorCode === ErrorCode.DATABASE_CORRUPTED ? 10 : 3,
+    category: 'database',
+    severity,
     details: {
       operation,
       error: error.message,
+      action: errorCode === ErrorCode.DATABASE_CORRUPTED 
+        ? 'Attempting database recovery or fallback to read-only mode'
+        : 'Retrying database operation',
     },
   };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
 }
 
 /**
@@ -246,90 +514,50 @@ export function handleStorageFullError(
   requiredSpace: number,
   availableSpace: number
 ): ErrorResponse {
-  return {
+  const response: ErrorResponse = {
     errorCode: ErrorCode.STORAGE_FULL,
-    message: 'Storage full. Please free up space.',
+    message: `Storage full: need ${requiredSpace} bytes, have ${availableSpace} bytes`,
+    userMessage: 'Storage full. Please free up space.',
     retryable: false,
+    category: 'storage',
+    severity: 'high',
     details: {
       requiredSpace,
       availableSpace,
       suggestion: 'Archive old content or delete unused files',
     },
   };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
 }
 
 /**
- * Handle network timeout errors.
+ * Handle generic sync failures.
  */
-export function handleNetworkTimeoutError(
-  operation: string,
-  attempt: number
-): ErrorResponse {
-  return {
-    errorCode: ErrorCode.NETWORK_TIMEOUT,
-    message: `Network timeout during ${operation}`,
-    retryable: true,
-    retryAfter: Math.min(5 * Math.pow(2, attempt - 1), 30),
-    details: {
-      operation,
-      attempt,
-      action: 'Retrying with exponential backoff',
-    },
-  };
-}
-
-/**
- * Handle checksum mismatch errors.
- */
-export function handleChecksumMismatchError(
-  expectedChecksum: string,
-  actualChecksum: string
-): ErrorResponse {
-  return {
-    errorCode: ErrorCode.CHECKSUM_MISMATCH,
-    message: 'Bundle checksum mismatch. Re-downloading...',
-    retryable: true,
-    retryAfter: 5,
-    details: {
-      expectedChecksum,
-      actualChecksum,
-      action: 'Re-downloading bundle from last checkpoint',
-    },
-  };
-}
-
-/**
- * Handle upload failure errors.
- */
-export function handleUploadFailureError(
+export function handleSyncFailureError(
   error: Error,
-  attempt: number
+  phase: string
 ): ErrorResponse {
-  return {
-    errorCode: ErrorCode.UPLOAD_FAILED,
-    message: 'Upload failed. Queuing for next sync...',
+  const response: ErrorResponse = {
+    errorCode: ErrorCode.SYNC_FAILED,
+    message: `Sync failed during ${phase}: ${error.message}`,
+    userMessage: 'Sync failed. Will retry automatically.',
     retryable: true,
-    retryAfter: Math.min(5 * Math.pow(2, attempt - 1), 30),
+    retryAfter: 60,
+    category: 'sync',
+    severity: 'medium',
     details: {
+      phase,
       error: error.message,
-      attempt,
-      action: 'Logs queued for next sync. Operation continues.',
+      action: 'Sync will be retried automatically',
     },
   };
-}
 
-/**
- * Handle authentication failure errors.
- */
-export function handleAuthenticationFailureError(): ErrorResponse {
-  return {
-    errorCode: ErrorCode.AUTH_FAILED,
-    message: 'Authentication failed. Please log in again.',
-    retryable: false,
-    details: {
-      action: 'User needs to re-authenticate',
-    },
-  };
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
 }
 
 /**
@@ -338,39 +566,68 @@ export function handleAuthenticationFailureError(): ErrorResponse {
 export function createErrorResponse(
   errorCode: string,
   message: string,
+  userMessage: string,
+  category: ErrorCategory,
+  severity: ErrorSeverity,
   retryable: boolean = false,
   retryAfter?: number,
   details?: Record<string, any>
 ): ErrorResponse {
-  return {
+  const response: ErrorResponse = {
     errorCode,
     message,
+    userMessage,
     retryable,
     retryAfter,
     details,
+    category,
+    severity,
   };
+
+  // Emit error event for UI notification
+  emitErrorEvent(response);
+  return response;
 }
 
 /**
- * Log error with context.
+ * Emit error event for UI notification.
+ */
+function emitErrorEvent(errorResponse: ErrorResponse): void {
+  const event: ErrorEvent = {
+    errorCode: errorResponse.errorCode,
+    userMessage: errorResponse.userMessage,
+    category: errorResponse.category,
+    severity: errorResponse.severity,
+    timestamp: Date.now(),
+    retryable: errorResponse.retryable,
+    retryAfter: errorResponse.retryAfter,
+    details: errorResponse.details,
+  };
+
+  errorEventEmitter.emit(event);
+}
+
+/**
+ * Log error with structured data.
+ * Requirement 26: Log structured error data with category, severity, message, details
  */
 export function logError(
-  errorType: string,
-  severity: 'low' | 'medium' | 'high' | 'critical',
+  category: ErrorCategory,
+  severity: ErrorSeverity,
   message: string,
-  context?: Record<string, any>,
+  details?: Record<string, any>,
   stackTrace?: string
 ): void {
   const errorLog = {
     timestamp: new Date().toISOString(),
-    errorType,
+    category,
     severity,
     message,
-    context,
+    details,
     stackTrace,
   };
   
-  // Log to console (in production, this would go to a logging service)
+  // Log to console with appropriate level
   if (severity === 'critical' || severity === 'high') {
     console.error('[ERROR]', errorLog);
   } else if (severity === 'medium') {
@@ -380,4 +637,20 @@ export function logError(
   }
   
   // TODO: In production, send to analytics/logging service
+  // This could include services like Sentry, LogRocket, or custom analytics
+}
+
+/**
+ * Add global error event listener.
+ * Returns a function to remove the listener.
+ */
+export function addErrorEventListener(listener: ErrorEventListener): () => void {
+  return errorEventEmitter.addListener(listener);
+}
+
+/**
+ * Remove all error event listeners.
+ */
+export function removeAllErrorEventListeners(): void {
+  errorEventEmitter.removeAllListeners();
 }

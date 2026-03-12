@@ -16,6 +16,7 @@ describe('initializeDatabase', () => {
     
     // Create mock database manager with all required repositories
     mockDbManager = {
+      executeSql: jest.fn().mockResolvedValue([]), // Mock executeSql to return empty array (no existing bundle)
       learningBundleRepository: {
         getActiveBundle: jest.fn().mockResolvedValue(null),
         insert: jest.fn().mockResolvedValue(undefined),
@@ -64,16 +65,16 @@ describe('initializeDatabase', () => {
   it('should skip initialization if bundle already exists', async () => {
     const testStudentId = 'test-student-456';
     
-    // Mock existing bundle
-    mockDbManager.learningBundleRepository.getActiveBundle.mockResolvedValue({
-      bundleId: 'existing-bundle',
-      studentId: testStudentId,
-    } as any);
+    // Mock existing bundle by bundle_id check
+    mockDbManager.executeSql = jest.fn().mockResolvedValue([{ bundle_id: 'sample-bundle-1' }]);
 
     await initializeDatabase(mockDbManager, testStudentId);
 
-    // Verify getActiveBundle was called
-    expect(mockDbManager.learningBundleRepository.getActiveBundle).toHaveBeenCalledWith(testStudentId);
+    // Verify executeSql was called to check for existing bundle
+    expect(mockDbManager.executeSql).toHaveBeenCalledWith(
+      'SELECT * FROM learning_bundles WHERE bundle_id = ?',
+      ['bundle-001']
+    );
 
     // Verify no insert operations were performed
     expect(mockDbManager.learningBundleRepository.insert).not.toHaveBeenCalled();

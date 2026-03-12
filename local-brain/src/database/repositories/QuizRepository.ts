@@ -55,24 +55,48 @@ export class QuizRepository extends BaseRepository<QuizRow> {
   /**
    * Create a new quiz (accepts QuizRow format).
    */
-  async create(quiz: QuizRow): Promise<void> {
+  async create(quiz: QuizRow): Promise<void>;
+  async create(quiz: Quiz, bundleId: string): Promise<void>;
+  async create(quiz: Quiz | QuizRow, bundleId?: string): Promise<void> {
     try {
-      await this.execute(
-        `INSERT INTO ${this.tableName} (
-          quiz_id, bundle_id, subject, topic, title, difficulty, 
-          time_limit, questions_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          quiz.quiz_id,
-          quiz.bundle_id,
-          quiz.subject,
-          quiz.topic,
-          quiz.title,
-          quiz.difficulty,
-          quiz.time_limit,
-          quiz.questions_json,
-        ]
-      );
+      if ('quizId' in quiz && bundleId) {
+        // Quiz object with bundleId
+        await this.execute(
+          `INSERT INTO ${this.tableName} (
+            quiz_id, bundle_id, subject, topic, title, difficulty, 
+            time_limit, questions_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            quiz.quizId,
+            bundleId,
+            quiz.subject,
+            quiz.topic,
+            quiz.title,
+            quiz.difficulty,
+            quiz.timeLimit || null,
+            JSON.stringify(quiz.questions),
+          ]
+        );
+      } else {
+        // QuizRow format
+        const quizRow = quiz as QuizRow;
+        await this.execute(
+          `INSERT INTO ${this.tableName} (
+            quiz_id, bundle_id, subject, topic, title, difficulty, 
+            time_limit, questions_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            quizRow.quiz_id,
+            quizRow.bundle_id,
+            quizRow.subject,
+            quizRow.topic,
+            quizRow.title,
+            quizRow.difficulty,
+            quizRow.time_limit,
+            quizRow.questions_json,
+          ]
+        );
+      }
     } catch (error) {
       console.error('Error creating quiz:', error);
       throw new Error(`Failed to create quiz: ${error}`);

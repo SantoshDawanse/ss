@@ -68,6 +68,8 @@ export class SecureNetworkService {
    * @param url - Full URL or path (will be prefixed with API_BASE_URL if relative)
    * @param options - Request options
    * @returns Secure response
+   * 
+   * Note: For connectivity checks, set timeout to 5000ms per Requirement 1.2
    */
   public async secureRequest<T = any>(
     url: string,

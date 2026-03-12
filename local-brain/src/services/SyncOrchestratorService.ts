@@ -24,11 +24,15 @@ import { PerformanceLogRow } from '../database/repositories/PerformanceLogReposi
 import { BundleImportService } from './BundleImportService';
 import { EncryptionService } from './EncryptionService';
 import { SecureNetworkService } from './SecureNetworkService';
+import { AuthenticationService } from './AuthenticationService';
+import { SyncState, SyncStatus, SyncStateChangeEvent, SyncEventListener, DownloadProgress } from '../types/sync';
 import {
   handleNetworkTimeoutError,
   handleChecksumMismatchError,
   handleUploadFailureError,
   handleAuthenticationFailureError,
+  handleConnectivityFailureError,
+  handleBundleImportFailureError,
   logError,
   RetryableError,
   NonRetryableError,
@@ -52,19 +56,6 @@ const MAX_RETRY_ATTEMPTS = 3;
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
 
-// Sync State Machine States
-export type SyncState = 'idle' | 'checking_connectivity' | 'uploading' | 'downloading' | 'importing' | 'complete' | 'failed';
-
-// Sync Session Status
-export interface SyncStatus {
-  state: SyncState;
-  sessionId: string | null;
-  progress: number; // 0-100
-  error: string | null;
-  logsUploaded: number;
-  bundleDownloaded: boolean;
-}
-
 // Upload Response from Cloud Brain
 interface UploadResponse {
   sessionId: string;
@@ -80,37 +71,69 @@ interface DownloadResponse {
   validUntil: string;
 }
 
-// Download Progress Tracking
-interface DownloadProgress {
-  sessionId: string;
-  bundleUrl: string;
-  totalBytes: number;
-  downloadedBytes: number;
-  checksum: string;
-  filePath: string;
-}
-
 export class SyncOrchestratorService {
   private dbManager: DatabaseManager;
   private bundleImportService: BundleImportService;
   private encryptionService: EncryptionService;
   private secureNetworkService: SecureNetworkService;
+  private authenticationService: AuthenticationService;
   private currentState: SyncState = 'idle';
   private currentSessionId: string | null = null;
   private studentId: string;
-  private authToken: string;
-  private downloadProgress: Map<string, DownloadProgress> = new Map();
+  private eventListeners: Set<SyncEventListener> = new Set();
 
   constructor(studentId: string, authToken: string, publicKey: string) {
     this.dbManager = DatabaseManager.getInstance();
     this.bundleImportService = new BundleImportService(publicKey);
     this.encryptionService = EncryptionService.getInstance();
     this.secureNetworkService = SecureNetworkService.getInstance();
+    this.authenticationService = AuthenticationService.getInstance();
     this.studentId = studentId;
-    this.authToken = authToken;
+    
+    // Initialize authentication service with the provided token if not already initialized
+    this.initializeAuth(authToken);
     
     // Log API configuration for debugging
     console.log('[SyncOrchestratorService] Initialized with API_BASE_URL:', API_BASE_URL);
+  }
+
+  /**
+   * Initialize authentication service with the provided token.
+   * This ensures token refresh works properly.
+   */
+  private async initializeAuth(authToken: string): Promise<void> {
+      try {
+        // Set the token in AuthenticationService for proper refresh handling
+        await this.authenticationService.initialize();
+
+        // If we have a valid token from initialization, use it
+        // Otherwise, use the provided token (for backward compatibility)
+        const authState = this.authenticationService.getAuthState();
+        if (!authState.accessToken && authToken) {
+          console.log('[SyncOrchestratorService] Using provided authToken');
+          // Set the provided token as a temporary token for this sync session
+          this.authenticationService.setTemporaryToken(authToken, 24);
+        }
+      } catch (error) {
+        console.error('[SyncOrchestratorService] Failed to initialize auth:', error);
+      }
+    }
+
+  /**
+   * Get a valid auth token, refreshing if necessary.
+   * This ensures we always use a fresh token for API requests.
+   */
+  private async getValidAuthToken(): Promise<string> {
+    try {
+      return await this.authenticationService.getAccessToken();
+    } catch (error) {
+      console.error('[SyncOrchestratorService] Failed to get valid auth token:', error);
+      throw new NonRetryableError(
+        'Authentication failed. Please log in again.',
+        'AUTH_FAILED',
+        { context: { action: 'User needs to re-authenticate' } }
+      );
+    }
   }
 
   /**
@@ -139,16 +162,46 @@ export class SyncOrchestratorService {
   /**
    * Get current sync status.
    */
-  public getSyncStatus(): SyncStatus {
-    return {
-      state: this.currentState,
-      sessionId: this.currentSessionId,
-      progress: this.calculateProgress(),
-      error: null,
-      logsUploaded: 0,
-      bundleDownloaded: false,
-    };
-  }
+  /**
+     * Get current sync status with progress tracking.
+     * Requirement 27.1-27.8: Sync progress indication
+     * 
+     * Returns:
+     * - state: Current sync state
+     * - sessionId: Current session ID (null if idle)
+     * - progress: Progress percentage (0-100)
+     * - error: Error message (null if no error)
+     * - logsUploaded: Number of logs uploaded in current session
+     * - bundleDownloaded: Whether bundle has been downloaded
+     */
+    public async getSyncStatus(): Promise<SyncStatus> {
+      // Get session data if we have a current session
+      let logsUploaded = 0;
+      let bundleDownloaded = false;
+      let error: string | null = null;
+
+      if (this.currentSessionId) {
+        try {
+          const session = await this.dbManager.syncSessionRepository.findById(this.currentSessionId);
+          if (session) {
+            logsUploaded = session.logs_uploaded;
+            bundleDownloaded = session.bundle_downloaded === 1;
+            error = session.error_message;
+          }
+        } catch (err) {
+          console.error('Error fetching session data for status:', err);
+        }
+      }
+
+      return {
+        state: this.currentState,
+        sessionId: this.currentSessionId,
+        progress: this.calculateProgress(),
+        error,
+        logsUploaded,
+        bundleDownloaded,
+      };
+    }
 
   /**
    * Start a new sync session.
@@ -175,7 +228,11 @@ export class SyncOrchestratorService {
       // Check connectivity
       const isConnected = await this.checkConnectivity();
       if (!isConnected) {
-        throw new Error('No internet connectivity available');
+        // Abort sync and return to idle state on connectivity failure
+        this.transitionState('idle');
+        const errorResponse = handleConnectivityFailureError();
+        logError('network', 'medium', errorResponse.message, errorResponse.details);
+        throw new Error(errorResponse.userMessage);
       }
 
       // Create new sync session
@@ -184,6 +241,7 @@ export class SyncOrchestratorService {
 
       const session: SyncSessionRow = {
         session_id: sessionId,
+        backend_session_id: null,
         start_time: Date.now(),
         end_time: null,
         status: 'pending',
@@ -204,6 +262,7 @@ export class SyncOrchestratorService {
       // or if the API indicates a bundle is available
       // Use the backend session ID for download
       if (uploadResult.shouldDownload) {
+        console.log(`Starting download workflow with backend session ID: ${uploadResult.backendSessionId}`);
         await this.executeDownloadWorkflow(uploadResult.backendSessionId);
       } else {
         console.log('Skipping download - no new data uploaded or API not available');
@@ -217,22 +276,34 @@ export class SyncOrchestratorService {
       const syncDuration = Date.now() - syncStartTime;
       await MonitoringService.getInstance().recordSyncSuccess(syncDuration);
 
+      // Run cleanup operations after successful sync
+      // Requirement 23.4: Run cleanup automatically after successful sync
+      await this.cleanup();
+
       return this.getSyncStatus();
     } catch (error) {
       console.error('Sync failed:', error);
-      this.transitionState('failed');
       
-      if (this.currentSessionId) {
-        await this.dbManager.syncSessionRepository.fail(
-          this.currentSessionId,
-          error instanceof Error ? error.message : 'Unknown error',
-        );
+      // Handle connectivity failures differently - they should return to idle, not failed
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (errorMessage.includes('No internet connection')) {
+        // For connectivity failures, we already transitioned to idle above
+        // Don't transition to failed state
+        console.log('Sync aborted due to connectivity failure, returned to idle state');
+      } else {
+        // For other errors, transition to failed state
+        this.transitionState('failed');
+        
+        if (this.currentSessionId) {
+          await this.dbManager.syncSessionRepository.fail(
+            this.currentSessionId,
+            errorMessage,
+          );
+        }
       }
 
       // Record sync failure
-      await MonitoringService.getInstance().recordSyncFailure(
-        error instanceof Error ? error.message : 'Unknown error'
-      );
+      await MonitoringService.getInstance().recordSyncFailure(errorMessage);
 
       throw error;
     }
@@ -240,7 +311,7 @@ export class SyncOrchestratorService {
 
   /**
    * Resume an interrupted sync session.
-   * Requirement 4.6: Sync resume capability
+   * Requirement 20.1-20.7: Sync session resume capability
    */
   private async resumeSync(session: SyncSessionRow): Promise<SyncStatus> {
     this.currentSessionId = session.session_id;
@@ -249,32 +320,55 @@ export class SyncOrchestratorService {
       // Track resume start time for monitoring
       const syncStartTime = Date.now();
 
-      // Check connectivity
+      // Check connectivity first
       const isConnected = await this.checkConnectivity();
       if (!isConnected) {
-        throw new Error('No internet connectivity available');
+        const errorResponse = handleConnectivityFailureError();
+        logError('network', 'medium', errorResponse.message, errorResponse.details);
+        throw new Error(errorResponse.userMessage);
       }
 
-      // Resume based on last state
-      if (session.status === 'pending' || session.status === 'uploading') {
-        if (session.logs_uploaded === 0) {
-          await this.executeUploadWorkflow(session.session_id);
+      // Determine last completed phase from status and flags
+      // Requirement 20.3: Determine last completed phase from session status field
+      
+      // Requirement 20.4: Restart upload if status='pending' or 'uploading' and logs_uploaded=0
+      if ((session.status === 'pending' || session.status === 'uploading') && session.logs_uploaded === 0) {
+        console.log('Resuming upload workflow - no logs uploaded yet');
+        const uploadResult = await this.executeUploadWorkflow(session.session_id);
+        
+        // If upload indicates we should download, continue to download phase
+        if (uploadResult.shouldDownload && uploadResult.backendSessionId) {
+          console.log(`Upload complete, proceeding to download with backend session: ${uploadResult.backendSessionId}`);
+          await this.executeDownloadWorkflow(uploadResult.backendSessionId);
         }
       }
-
-      if (session.status === 'uploading' || session.status === 'downloading') {
-        if (session.bundle_downloaded === 0) {
-          await this.executeDownloadWorkflow(session.session_id);
+      // Requirement 20.5: Restart download if status='uploading' or 'downloading' and bundle_downloaded=0
+      else if ((session.status === 'uploading' || session.status === 'downloading') && session.bundle_downloaded === 0) {
+        console.log('Resuming download workflow - bundle not downloaded yet');
+        
+        // Use stored backend session ID for download resume
+        // Requirement 20.6: Use stored session_id for resume operations
+        if (!session.backend_session_id) {
+          throw new Error('Cannot resume download: backend session ID not found. Upload may need to be retried.');
         }
+        
+        await this.executeDownloadWorkflow(session.backend_session_id);
+      }
+      else {
+        console.log('Session already completed all phases, marking as complete');
       }
 
-      // Complete sync
+      // Requirement 20.7: Update session status to 'complete' on successful resume
       await this.dbManager.syncSessionRepository.complete(session.session_id);
       this.transitionState('complete');
 
       // Record sync success with duration
       const syncDuration = Date.now() - syncStartTime;
       await MonitoringService.getInstance().recordSyncSuccess(syncDuration);
+
+      // Run cleanup operations after successful sync
+      // Requirement 23.4: Run cleanup automatically after successful sync
+      await this.cleanup();
 
       return this.getSyncStatus();
     } catch (error) {
@@ -335,21 +429,23 @@ export class SyncOrchestratorService {
     // This creates the sync session on the backend
     let logs: PerformanceLog[] = [];
     
-    if (unsyncedLogs.length > 0) {
+    if (isFirstTimeUser) {
+      // First-time users always send empty logs array (Requirement 3.2)
+      console.log('First-time user - sending empty logs array to create sync session');
+      logs = [];
+    } else if (unsyncedLogs.length > 0) {
       // Convert to PerformanceLog format
       logs = unsyncedLogs.map(row =>
         this.dbManager.performanceLogRepository.parseLog(row),
       );
-    } else if (!isFirstTimeUser && hasContent) {
+    } else if (hasContent) {
       // Not first-time, has content, and no logs - skip sync
       console.log('No new logs to upload and bundle with content exists - skipping sync');
       await this.dbManager.syncSessionRepository.updateLogsUploaded(sessionId, 0);
       return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
     } else {
-      // First-time user or bundle without content - send empty array to create session
-      console.log(isFirstTimeUser 
-        ? 'First-time user with no logs - creating sync session'
-        : 'Bundle exists but has no content - re-syncing');
+      // Bundle without content - send empty array to create session
+      console.log('Bundle exists but has no content - re-syncing');
     }
 
     // Compress logs (empty array for first-time users)
@@ -359,8 +455,15 @@ export class SyncOrchestratorService {
     try {
       const uploadResponse = await this.uploadWithRetry(compressedLogs);
 
-      // Mark logs as synced (if any)
-      if (unsyncedLogs.length > 0) {
+      // Mark logs as synced
+      if (isFirstTimeUser && unsyncedLogs.length > 0) {
+        // For first-time users, mark existing logs as synced even though we sent empty array
+        // This prevents them from being sent in future syncs
+        const logIds = unsyncedLogs.map(log => log.log_id!);
+        await this.dbManager.performanceLogRepository.markAsSynced(logIds);
+        console.log(`Marked ${logIds.length} existing logs as synced for first-time user`);
+      } else if (!isFirstTimeUser && unsyncedLogs.length > 0) {
+        // For returning users, mark the logs we actually sent
         const logIds = unsyncedLogs.map(log => log.log_id!);
         await this.dbManager.performanceLogRepository.markAsSynced(logIds);
       }
@@ -371,6 +474,12 @@ export class SyncOrchestratorService {
         uploadResponse.logsReceived,
       );
 
+      // Store backend session ID for resume capability
+      await this.dbManager.syncSessionRepository.updateBackendSessionId(
+        sessionId,
+        uploadResponse.sessionId,
+      );
+
       console.log(`Uploaded ${uploadResponse.logsReceived} logs, backend session ID: ${uploadResponse.sessionId}`);
       
       return { 
@@ -379,8 +488,42 @@ export class SyncOrchestratorService {
         backendSessionId: uploadResponse.sessionId
       };
     } catch (error) {
-      // If upload fails due to API not being available, don't fail the entire sync
-      console.warn('Upload failed - API may not be available:', error);
+      // Handle upload failures gracefully
+      console.error('Upload failed after retries:', error);
+      
+      // For retryable errors, keep logs unsynced for next attempt
+      if (error instanceof RetryableError) {
+        console.log('Upload failed with retryable error - logs will be retried in next sync');
+        logError('network', 'medium', 'Upload failed - will retry in next sync', {
+          error: error.message,
+          logsCount: logs.length,
+          sessionId
+        });
+        
+        // Don't mark logs as synced - they'll be retried next time
+        return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
+      }
+      
+      // For non-retryable errors, fail the sync
+      if (error instanceof NonRetryableError) {
+        console.error('Upload failed with non-retryable error:', error.message);
+        logError('network', 'high', 'Upload failed with non-retryable error', {
+          error: error.message,
+          errorCode: error.errorCode,
+          logsCount: logs.length,
+          sessionId
+        });
+        throw error;
+      }
+      
+      // For other errors, treat as retryable
+      console.warn('Upload failed with unknown error - treating as retryable:', error);
+      logError('network', 'medium', 'Upload failed with unknown error', {
+        error: error instanceof Error ? error.message : String(error),
+        logsCount: logs.length,
+        sessionId
+      });
+      
       return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
     }
   }
@@ -393,10 +536,19 @@ export class SyncOrchestratorService {
     this.transitionState('downloading');
     await this.dbManager.syncSessionRepository.updateStatus(sessionId, 'downloading');
 
+    console.log(`[SyncOrchestratorService] Starting download workflow for session: ${sessionId}`);
+
     // Get download info from Cloud Brain
+    console.log(`[SyncOrchestratorService] Requesting download info for session: ${sessionId}`);
     const downloadInfo = await this.getDownloadInfo(sessionId);
+    console.log(`[SyncOrchestratorService] Download info received:`, {
+      bundleUrl: downloadInfo.bundleUrl ? 'URL_PROVIDED' : 'NO_URL',
+      bundleSize: downloadInfo.bundleSize,
+      checksum: downloadInfo.checksum ? 'CHECKSUM_PROVIDED' : 'NO_CHECKSUM'
+    });
 
     // Download bundle with resume support
+    console.log(`[SyncOrchestratorService] Starting bundle download...`);
     const bundlePath = await this.downloadBundleWithResume(
       sessionId,
       downloadInfo.bundleUrl,
@@ -405,16 +557,21 @@ export class SyncOrchestratorService {
     );
 
     // Verify checksum
+    console.log(`[SyncOrchestratorService] Verifying bundle checksum...`);
     const isValid = await this.verifyChecksum(bundlePath, downloadInfo.checksum);
     if (!isValid) {
       throw new Error('Bundle checksum verification failed');
     }
+    console.log(`[SyncOrchestratorService] Checksum verification passed`);
 
     // Import bundle
+    console.log(`[SyncOrchestratorService] Starting bundle import...`);
     await this.importBundle(bundlePath, downloadInfo.checksum);
+    console.log(`[SyncOrchestratorService] Bundle import completed successfully`);
 
     // Update session
     await this.dbManager.syncSessionRepository.updateBundleDownloaded(sessionId, true);
+    console.log(`[SyncOrchestratorService] Download workflow completed for session: ${sessionId}`);
 
     // Clean up downloaded file
     await FileSystem.deleteAsync(bundlePath, { idempotent: true });
@@ -425,14 +582,48 @@ export class SyncOrchestratorService {
   /**
    * Compress performance logs using gzip.
    */
-  private async compressLogs(logs: PerformanceLog[]): Promise<string> {
-    // Encrypt logs before compression (Requirement 9.1)
-    const encryptedLogs = await this.encryptionService.encryptLogsForSync(logs);
-    
-    // In React Native, we'll use base64 encoding as a simple compression
-    // In production, you'd use a proper compression library like pako
-    // The encryptedLogs is already base64 encoded, so just return it
-    return encryptedLogs;
+  private async compressLogs(logs: PerformanceLog[]): Promise<any[]> {
+    // Convert logs to cloud-brain API format
+    return logs.map(log => {
+      // Create a clean log object with snake_case field names
+      const cleanLog: any = {
+        student_id: log.studentId,
+        timestamp: log.timestamp.toISOString(),
+        event_type: log.eventType,
+        content_id: log.contentId,
+        subject: log.subject,
+        topic: log.topic,
+      };
+      
+      // Handle data field - ensure it's a plain object
+      if (log.data && typeof log.data === 'object') {
+        // Clone the data object to avoid mutating the original
+        const data: Record<string, any> = {};
+        
+        // Copy known properties, skipping undefined/null
+        if (log.data.timeSpent !== undefined && log.data.timeSpent !== null) {
+          data.timeSpent = log.data.timeSpent;
+        }
+        if (log.data.answer !== undefined && log.data.answer !== null) {
+          data.answer = log.data.answer;
+        }
+        if (log.data.correct !== undefined && log.data.correct !== null) {
+          data.correct = log.data.correct;
+        }
+        if (log.data.hintsUsed !== undefined && log.data.hintsUsed !== null) {
+          data.hintsUsed = log.data.hintsUsed;
+        }
+        if (log.data.attempts !== undefined && log.data.attempts !== null) {
+          data.attempts = log.data.attempts;
+        }
+        
+        cleanLog.data = data;
+      } else {
+        cleanLog.data = {};
+      }
+      
+      return cleanLog;
+    });
   }
 
   /**
@@ -440,32 +631,40 @@ export class SyncOrchestratorService {
    * Uses secure network service with TLS 1.3 (Requirement 9.5)
    * Handles network timeouts and upload failures gracefully.
    */
-  private async uploadWithRetry(compressedLogs: string): Promise<UploadResponse> {
+  private async uploadWithRetry(compressedLogs: any[]): Promise<UploadResponse> {
     let attempt = 0;
     let lastError: Error | null = null;
 
     while (attempt < MAX_RETRY_ATTEMPTS) {
       try {
         const requestBody = {
-          studentId: this.studentId,
+          student_id: this.studentId,  // Use snake_case to match Pydantic model
           logs: compressedLogs,
-          lastSyncTime: await this.getLastSyncTime(),
+          last_sync_time: await this.getLastSyncTime(),  // Use snake_case
         };
         
         // Log request details for debugging
         console.log('[SyncOrchestratorService] Upload request:', {
-          studentId: this.studentId,
+          student_id: this.studentId,
           logsLength: compressedLogs.length,
-          logsType: typeof compressedLogs,
-          lastSyncTime: requestBody.lastSyncTime,
+          logsType: 'array',
+          last_sync_time: requestBody.last_sync_time,
         });
+        
+        // Debug: log first log entry to see format
+        if (compressedLogs.length > 0) {
+          console.log('[SyncOrchestratorService] First log entry:', JSON.stringify(compressedLogs[0], null, 2));
+        }
+        
+        // Get fresh auth token (will refresh if expired)
+        const authToken = await this.getValidAuthToken();
         
         const response = await this.secureNetworkService.post<UploadResponse>(
           SYNC_UPLOAD_ENDPOINT,
           requestBody,
           {
             headers: {
-              'Authorization': `Bearer ${this.authToken}`,
+              'Authorization': `Bearer ${authToken}`,
             },
           }
         );
@@ -482,7 +681,13 @@ export class SyncOrchestratorService {
             );
           }
           
-          throw new Error(`Upload failed: ${response.status} ${response.error}`);
+          // Handle server errors (500, 502, 503, etc.)
+          if (response.status >= 500) {
+            throw new Error(`Upload failed: ${response.status} Internal server error`);
+          }
+          
+          // Handle client errors (400, 404, etc.)
+          throw new Error(`Upload failed: ${response.status} ${response.error || 'Client error'}`);
         }
 
         return response.data!;
@@ -532,11 +737,14 @@ export class SyncOrchestratorService {
 
     while (attempt < MAX_RETRY_ATTEMPTS) {
       try {
+        // Get fresh auth token (will refresh if expired)
+        const authToken = await this.getValidAuthToken();
+        
         const response = await this.secureNetworkService.get<DownloadResponse>(
           `${SYNC_DOWNLOAD_ENDPOINT}/${sessionId}`,
           {
             headers: {
-              'Authorization': `Bearer ${this.authToken}`,
+              'Authorization': `Bearer ${authToken}`,
             },
           }
         );
@@ -579,26 +787,51 @@ export class SyncOrchestratorService {
     console.log(`Downloading bundle: size=${bundleSize}, checksum=${checksum}`);
     console.log(`Download URL: ${bundleUrl.substring(0, 100)}...`);
 
-    // Check if partial download exists
+    // Check for existing download progress in database
     let downloadedBytes = 0;
-    const fileInfo = await FileSystem.getInfoAsync(filePath);
-    if (fileInfo.exists && fileInfo.size !== undefined) {
-      // If file exists, verify if it's a valid partial download or corrupted
-      // For now, delete and start fresh to avoid checksum issues
-      console.log(`Deleting existing file to start fresh download`);
-      await FileSystem.deleteAsync(filePath, { idempotent: true });
-      downloadedBytes = 0;
+    const existingProgress = await this.dbManager.downloadProgressRepository.getProgress(sessionId);
+    
+    if (existingProgress) {
+      console.log(`Found existing download progress: ${existingProgress.downloadedBytes}/${existingProgress.totalBytes} bytes`);
+      
+      // Verify the partial file exists and is valid
+      const fileInfo = await FileSystem.getInfoAsync(existingProgress.filePath);
+      if (fileInfo.exists && fileInfo.size !== undefined) {
+        // Verify partial file integrity before resume
+        if (await this.verifyPartialFileIntegrity(existingProgress.filePath, fileInfo.size, existingProgress.checksum)) {
+          downloadedBytes = fileInfo.size;
+          console.log(`Resuming download from ${downloadedBytes} bytes`);
+        } else {
+          console.log(`Partial file corrupted, deleting and restarting download`);
+          await FileSystem.deleteAsync(existingProgress.filePath, { idempotent: true });
+          await this.dbManager.downloadProgressRepository.deleteProgress(sessionId);
+          downloadedBytes = 0;
+        }
+      } else {
+        console.log(`Partial file not found, restarting download`);
+        await this.dbManager.downloadProgressRepository.deleteProgress(sessionId);
+        downloadedBytes = 0;
+      }
+    } else {
+      // Check if file exists from previous attempt without progress record
+      const fileInfo = await FileSystem.getInfoAsync(filePath);
+      if (fileInfo.exists && fileInfo.size !== undefined) {
+        console.log(`Deleting existing file to start fresh download`);
+        await FileSystem.deleteAsync(filePath, { idempotent: true });
+      }
     }
 
-    // Store download progress
-    this.downloadProgress.set(sessionId, {
+    // Store/update download progress in database
+    const progressData: DownloadProgress = {
       sessionId,
       bundleUrl,
       totalBytes: bundleSize,
       downloadedBytes,
       checksum,
       filePath,
-    });
+    };
+    
+    await this.dbManager.downloadProgressRepository.saveProgress(progressData);
 
     // Download with resume support
     let attempt = 0;
@@ -611,14 +844,23 @@ export class SyncOrchestratorService {
         // Add Range header if resuming
         if (downloadedBytes > 0) {
           headers['Range'] = `bytes=${downloadedBytes}-`;
+          console.log(`Resuming download with Range header: bytes=${downloadedBytes}-`);
         }
 
         const downloadResumable = FileSystem.createDownloadResumable(
           bundleUrl,
           filePath,
           { headers },
-          (downloadProgress: any) => {
+          async (downloadProgress: any) => {
             const progress = downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
+            const currentBytes = downloadedBytes + downloadProgress.totalBytesWritten;
+            
+            // Update progress in database periodically (every 100KB or 10% progress)
+            if (downloadProgress.totalBytesWritten % (100 * 1024) === 0 || 
+                Math.floor(progress * 10) !== Math.floor((currentBytes - 100 * 1024) / bundleSize * 10)) {
+              await this.dbManager.downloadProgressRepository.updateProgress(sessionId, currentBytes);
+            }
+            
             console.log(`Download progress: ${(progress * 100).toFixed(2)}%`);
           },
         );
@@ -650,6 +892,8 @@ export class SyncOrchestratorService {
           }).join('')}`);
         }
 
+        // Download completed successfully, clean up progress record
+        await this.dbManager.downloadProgressRepository.deleteProgress(sessionId);
         console.log('Download complete:', result.uri);
         return result.uri;
       } catch (error) {
@@ -665,6 +909,7 @@ export class SyncOrchestratorService {
           const fileInfo = await FileSystem.getInfoAsync(filePath);
           if (fileInfo.exists && fileInfo.size !== undefined) {
             downloadedBytes = fileInfo.size;
+            await this.dbManager.downloadProgressRepository.updateProgress(sessionId, downloadedBytes);
           }
         }
       }
@@ -728,6 +973,62 @@ export class SyncOrchestratorService {
   }
 
   /**
+   * Verify partial file integrity before resume.
+   * This is a simplified check - in a full implementation, we would need
+   * to verify the partial content against the expected checksum range.
+   * For now, we check basic file properties and structure.
+   */
+  private async verifyPartialFileIntegrity(filePath: string, fileSize: number, expectedChecksum: string): Promise<boolean> {
+    try {
+      // Basic file existence and size check
+      const fileInfo = await FileSystem.getInfoAsync(filePath);
+      if (!fileInfo.exists || fileInfo.size === undefined) {
+        console.log('Partial file does not exist or has no size');
+        return false;
+      }
+
+      if (fileInfo.size !== fileSize) {
+        console.log(`Partial file size mismatch: expected ${fileSize}, actual ${fileInfo.size}`);
+        return false;
+      }
+
+      // For a more robust implementation, we could:
+      // 1. Read the first few KB and verify they match expected content structure
+      // 2. Check if the file has valid zip headers (if it's a zip file)
+      // 3. Verify partial checksum if the server supports it
+      
+      // For now, we do a basic structure check by reading the first few bytes
+      try {
+        const firstBytes = await FileSystem.readAsStringAsync(filePath, {
+          encoding: FileSystem.EncodingType.Base64,
+          length: 100,
+        });
+        
+        if (firstBytes.length === 0) {
+          console.log('Partial file appears to be empty');
+          return false;
+        }
+
+        // Decode and check if it looks like valid binary data
+        const decoded = atob(firstBytes);
+        if (decoded.length === 0) {
+          console.log('Partial file contains invalid base64 data');
+          return false;
+        }
+
+        console.log('Partial file integrity check passed');
+        return true;
+      } catch (readError) {
+        console.log('Failed to read partial file for integrity check:', readError);
+        return false;
+      }
+    } catch (error) {
+      console.error('Partial file integrity check error:', error);
+      return false;
+    }
+  }
+
+  /**
    * Import bundle to database.
    * Requirement 4.8, 7.7: Bundle validation and import
    */
@@ -739,7 +1040,12 @@ export class SyncOrchestratorService {
       console.log('Bundle imported successfully');
     } catch (error) {
       console.error('Bundle import failed:', error);
-      throw error;
+      const errorResponse = handleBundleImportFailureError(
+        error instanceof Error ? error : new Error('Unknown import error'),
+        bundlePath.includes('bundle_') ? bundlePath.split('bundle_')[1]?.split('.')[0] : undefined
+      );
+      logError('content', 'high', errorResponse.message, errorResponse.details);
+      throw new Error(errorResponse.userMessage);
     }
   }
 
@@ -781,33 +1087,93 @@ export class SyncOrchestratorService {
    * Transition sync state machine.
    */
   private transitionState(newState: SyncState): void {
-    console.log(`Sync state transition: ${this.currentState} -> ${newState}`);
+    const previousState = this.currentState;
+    console.log(`Sync state transition: ${previousState} -> ${newState}`);
     this.currentState = newState;
+    
+    // Emit state change event for UI updates
+    this.emitStateChange(previousState, newState);
+  }
+
+  /**
+   * Emit state change event to all registered listeners.
+   */
+  private emitStateChange(previousState: SyncState, currentState: SyncState): void {
+    const event: SyncStateChangeEvent = {
+      previousState,
+      currentState,
+      sessionId: this.currentSessionId,
+      progress: this.calculateProgress(),
+      timestamp: Date.now(),
+    };
+
+    this.eventListeners.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error('Error in sync state change listener:', error);
+      }
+    });
+  }
+
+  /**
+   * Add event listener for sync state changes.
+   * Returns a function to remove the listener.
+   */
+  public addStateChangeListener(listener: SyncEventListener): () => void {
+    this.eventListeners.add(listener);
+    
+    // Return cleanup function
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Remove all event listeners.
+   */
+  public removeAllListeners(): void {
+    this.eventListeners.clear();
   }
 
   /**
    * Calculate overall progress (0-100).
    */
-  private calculateProgress(): number {
-    switch (this.currentState) {
-      case 'idle':
-        return 0;
-      case 'checking_connectivity':
-        return 10;
-      case 'uploading':
-        return 30;
-      case 'downloading':
-        return 60;
-      case 'importing':
-        return 90;
-      case 'complete':
-        return 100;
-      case 'failed':
-        return 0;
-      default:
-        return 0;
+  /**
+     * Calculate overall progress (0-100).
+     * Requirement 27.2-27.7: Map states to progress percentages
+     * 
+     * Progress mapping:
+     * - idle: 0%
+     * - checking_connectivity: 10%
+     * - uploading: 30%
+     * - downloading: 60%
+     * - importing: 90%
+     * - complete: 100%
+     * - failed: 0%
+     * 
+     * Ensures progress bounds: 0-100 inclusive
+     */
+    private calculateProgress(): number {
+      switch (this.currentState) {
+        case 'idle':
+          return 0;
+        case 'checking_connectivity':
+          return 10;
+        case 'uploading':
+          return 30;
+        case 'downloading':
+          return 60;
+        case 'importing':
+          return 90;
+        case 'complete':
+          return 100;
+        case 'failed':
+          return 0;
+        default:
+          return 0;
+      }
     }
-  }
 
   /**
    * Check if sync is needed (has unsynced logs).
@@ -818,16 +1184,173 @@ export class SyncOrchestratorService {
   }
 
   /**
+   * Create mock content bundle for development when cloud-brain is unavailable
+   */
+  private async createMockBundle(): Promise<void> {
+    try {
+      console.log('Creating mock learning bundle...');
+      
+      // Generate a unique bundle ID
+      const bundleId = `mock_bundle_${Date.now()}`;
+      const validFrom = new Date();
+      const validUntil = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
+
+      // Create bundle record
+      const bundleRow = {
+        bundle_id: bundleId,
+        student_id: this.studentId,
+        valid_from: validFrom.getTime(),
+        valid_until: validUntil.getTime(),
+        total_size: 1024, // Mock size
+        checksum: 'mock_checksum',
+        status: 'active' as const,
+        created_at: Date.now(),
+      };
+
+      // Archive old bundles first
+      await this.dbManager.learningBundleRepository.archiveOldBundles(this.studentId);
+
+      // Create new bundle
+      await this.dbManager.learningBundleRepository.create(bundleRow);
+
+      // Create mock lessons
+      const mockLessons = [
+        {
+          lesson_id: `lesson_${Date.now()}_1`,
+          bundle_id: bundleId,
+          subject: 'Mathematics',
+          topic: 'Algebra',
+          title: 'Introduction to Variables',
+          difficulty: 'easy' as const,
+          estimated_minutes: 15,
+          curriculum_standards: JSON.stringify(['CCSS.MATH.CONTENT.6.EE.A.2']),
+          content_json: JSON.stringify([
+            {
+              type: 'text',
+              content: 'A variable is a symbol that represents a number. Variables are usually letters like x, y, or z.'
+            },
+            {
+              type: 'example',
+              content: 'If x = 5, then x + 3 = 8'
+            },
+            {
+              type: 'practice',
+              content: 'Try solving: If y = 7, what is y + 2?'
+            }
+          ]),
+        },
+        {
+          lesson_id: `lesson_${Date.now()}_2`,
+          bundle_id: bundleId,
+          subject: 'Mathematics',
+          topic: 'Algebra',
+          title: 'Solving Simple Equations',
+          difficulty: 'medium' as const,
+          estimated_minutes: 20,
+          curriculum_standards: JSON.stringify(['CCSS.MATH.CONTENT.6.EE.B.7']),
+          content_json: JSON.stringify([
+            {
+              type: 'text',
+              content: 'To solve an equation, we need to find the value of the variable that makes the equation true.'
+            },
+            {
+              type: 'example',
+              content: 'Solve: x + 5 = 12. Subtract 5 from both sides: x = 7'
+            },
+            {
+              type: 'practice',
+              content: 'Try solving: y - 3 = 10'
+            }
+          ]),
+        }
+      ];
+
+      // Insert mock lessons
+      for (const lesson of mockLessons) {
+        await this.dbManager.lessonRepository.create(lesson);
+      }
+
+      // Create mock quiz
+      const mockQuiz = {
+        quiz_id: `quiz_${Date.now()}`,
+        bundle_id: bundleId,
+        subject: 'Mathematics',
+        topic: 'Algebra',
+        title: 'Variables and Equations Quiz',
+        difficulty: 'easy' as const,
+        time_limit: 10,
+        questions_json: JSON.stringify([
+          {
+            question_id: 'q1',
+            type: 'multiple_choice',
+            question: 'If x = 4, what is x + 6?',
+            options: ['8', '10', '12', '14'],
+            correct_answer: '10',
+            explanation: 'x + 6 = 4 + 6 = 10'
+          },
+          {
+            question_id: 'q2',
+            type: 'multiple_choice',
+            question: 'Solve: y - 2 = 8',
+            options: ['6', '8', '10', '12'],
+            correct_answer: '10',
+            explanation: 'y - 2 = 8, so y = 8 + 2 = 10'
+          }
+        ]),
+      };
+
+      // Insert mock quiz
+      await this.dbManager.quizRepository.create(mockQuiz);
+
+      console.log(`Mock bundle created successfully: ${bundleId}`);
+      console.log(`- ${mockLessons.length} lessons created`);
+      console.log(`- 1 quiz created`);
+      
+    } catch (error) {
+      console.error('Failed to create mock bundle:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Clean up old sync sessions and downloaded files.
    */
+  /**
+   * Clean up old sync data.
+   * Requirements 23.1-23.6: Data cleanup and retention
+   * 
+   * This method:
+   * - Deletes synced logs older than 30 days (Req 23.1)
+   * - Deletes archived bundles older than 30 days (Req 23.2)
+   * - Keeps only last 10 sync session records (Req 23.3)
+   * - Only deletes synced data (Req 23.5)
+   * - Preserves all unsynced logs regardless of age (Req 23.6)
+   * 
+   * Note: Archived bundle deletion also happens during bundle import
+   * in BundleImportService.archiveOldBundles()
+   */
   public async cleanup(): Promise<void> {
-    // Keep only last 10 sync sessions
-    await this.dbManager.syncSessionRepository.deleteOldSessions(10);
+    try {
+      // Requirement 23.3: Keep only last 10 sync sessions
+      await this.dbManager.syncSessionRepository.deleteOldSessions(10);
 
-    // Delete synced logs older than 30 days
-    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    await this.dbManager.performanceLogRepository.deleteSyncedBefore(thirtyDaysAgo);
+      // Requirement 23.1: Delete synced logs older than 30 days
+      // Requirement 23.5: Only delete data that has been successfully synced
+      // Requirement 23.6: Preserve all unsynced logs regardless of age
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      await this.dbManager.performanceLogRepository.deleteSyncedBefore(thirtyDaysAgo);
 
-    console.log('Sync cleanup complete');
+      // Requirement 23.2: Delete archived bundles older than 30 days
+      // Note: This is also called during bundle import in BundleImportService
+      await this.dbManager.learningBundleRepository.deleteArchivedBefore(thirtyDaysAgo);
+
+      // Clean up old download progress records (older than 7 days)
+      await this.dbManager.downloadProgressRepository.cleanupOldProgress();
+
+      console.log('Sync cleanup complete');
+    } catch (error) {
+      console.error('Error during cleanup:', error);
+      // Don't throw - cleanup failures shouldn't fail the sync
+    }
   }
 }
