@@ -32,6 +32,55 @@ const createMockDatabase = () => {
     execSync(sql: string, params: any[] = []) {
       const normalizedSql = sql.trim().toUpperCase();
 
+      // Handle PRAGMA table_info
+      if (normalizedSql.startsWith('PRAGMA TABLE_INFO')) {
+        const match = sql.match(/PRAGMA TABLE_INFO\((\w+)\)/i);
+        if (match) {
+          const tableName = match[1];
+          // Return mock column info for sync_sessions table
+          if (tableName === 'sync_sessions') {
+            const columns = [
+              { cid: 0, name: 'session_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+              { cid: 1, name: 'backend_session_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+              { cid: 2, name: 'start_time', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+              { cid: 3, name: 'end_time', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+              { cid: 4, name: 'status', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+              { cid: 5, name: 'logs_uploaded', type: 'INTEGER', notnull: 0, dflt_value: '0', pk: 0 },
+              { cid: 6, name: 'bundle_downloaded', type: 'INTEGER', notnull: 0, dflt_value: '0', pk: 0 },
+              { cid: 7, name: 'error_message', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+            ];
+            return [{
+              rows: {
+                length: columns.length,
+                item: (index: number) => columns[index]
+              },
+              rowsAffected: 0,
+              insertId: 0
+            }];
+          }
+          if (tableName === 'schema_version') {
+            const columns = [
+              { cid: 0, name: 'version', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 1 },
+              { cid: 1, name: 'applied_at', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+              { cid: 2, name: 'description', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+            ];
+            return [{
+              rows: {
+                length: columns.length,
+                item: (index: number) => columns[index]
+              },
+              rowsAffected: 0,
+              insertId: 0
+            }];
+          }
+          return [{
+            rows: { length: 0, item: () => null },
+            rowsAffected: 0,
+            insertId: 0
+          }];
+        }
+      }
+
       // Handle PRAGMA, CREATE, DROP statements
       if (
         normalizedSql.startsWith('PRAGMA') ||
@@ -139,7 +188,42 @@ const createMockDatabase = () => {
         if (!tableMatch) {
           throw new Error('Invalid SELECT statement');
         }
-        const table = this.tables.get(tableMatch[1]);
+        const tableName = tableMatch[1];
+        const table = this.tables.get(tableName);
+        
+        // Handle sqlite_master queries
+        if (tableName === 'sqlite_master') {
+          const tableNames = Array.from(this.tables.keys());
+          let results = tableNames.map(name => ({ name, type: 'table' }));
+          
+          // Filter by WHERE clause if present
+          if (sql.toUpperCase().includes('WHERE')) {
+            const nameMatch = sql.match(/name\s*=\s*'([^']+)'/i);
+            if (nameMatch) {
+              const targetName = nameMatch[1];
+              results = results.filter(r => r.name === targetName);
+            }
+          }
+          
+          return [{
+            rows: {
+              length: results.length,
+              item: (index: number) => results[index]
+            },
+            rowsAffected: 0,
+            insertId: 0
+          }];
+        }
+        
+        // If table doesn't exist, return empty results
+        if (!table) {
+          return [{
+            rows: { length: 0, item: () => null },
+            rowsAffected: 0,
+            insertId: 0
+          }];
+        }
+        
         let results = Array.from(table.rows.values());
 
         // Count WHERE parameters to properly handle LIMIT parameter position

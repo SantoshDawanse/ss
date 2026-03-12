@@ -3,7 +3,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, ActivityIndicator, Alert, Modal } from 'react-native';
+import { View, StyleSheet, ActivityIndicator, Alert, Modal, ScrollView, RefreshControl } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { QuizDisplay } from '@/src/components/QuizDisplay';
 import { FeedbackDisplay, HintDisplay } from '@/src/components/FeedbackDisplay';
@@ -18,11 +18,13 @@ export default function QuizViewScreen() {
   
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [feedback, setFeedback] = useState<QuizFeedback | null>(null);
   const [currentHint, setCurrentHint] = useState<Hint | null>(null);
   const [hintsUsed, setHintsUsed] = useState(0);
   const [startTime] = useState(Date.now());
+  const [flaggedQuestions, setFlaggedQuestions] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (quizId && dbManager && performanceService && studentId) {
@@ -52,6 +54,15 @@ export default function QuizViewScreen() {
       Alert.alert('Error', 'Failed to load quiz');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await loadQuiz();
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -95,6 +106,11 @@ export default function QuizViewScreen() {
     correctAnswer: string,
     questionType: string
   ): boolean => {
+    // Handle null/undefined values
+    if (!userAnswer || !correctAnswer) {
+      return false;
+    }
+
     const normalizedUser = userAnswer.trim().toLowerCase();
     const normalizedCorrect = correctAnswer.trim().toLowerCase();
 
@@ -186,6 +202,39 @@ export default function QuizViewScreen() {
     }
   };
 
+  const handleFlagQuestion = () => {
+    if (!quiz) return;
+
+    const currentQuestion = quiz.questions[currentQuestionIndex];
+    const newFlagged = new Set(flaggedQuestions);
+    newFlagged.add(currentQuestion.questionId);
+    setFlaggedQuestions(newFlagged);
+
+    Alert.alert(
+      'Question Flagged',
+      'This question has been flagged for review. You can continue to the next question.',
+      [
+        {
+          text: 'Continue',
+          onPress: handleSkipQuestion,
+        },
+      ]
+    );
+  };
+
+  const handleSkipQuestion = () => {
+    if (!quiz) return;
+
+    // Move to next question or complete quiz
+    if (currentQuestionIndex < quiz.questions.length - 1) {
+      setCurrentQuestionIndex(currentQuestionIndex + 1);
+      setFeedback(null);
+      setHintsUsed(0);
+    } else {
+      handleQuizComplete();
+    }
+  };
+
   const handleQuizComplete = async () => {
     if (!quiz || !performanceService || !studentId) return;
 
@@ -200,9 +249,22 @@ export default function QuizViewScreen() {
         timeSpent
       );
 
+      // Log flagged questions for review
+      if (flaggedQuestions.size > 0) {
+        console.log('Flagged questions for review:', {
+          quizId,
+          flaggedQuestionIds: Array.from(flaggedQuestions),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const message = flaggedQuestions.size > 0
+        ? `Excellent work! Keep learning!\n\n${flaggedQuestions.size} question(s) have been flagged for review.`
+        : 'Excellent work! Keep learning!';
+
       Alert.alert(
         'Quiz Complete!',
-        'Excellent work! Keep learning!',
+        message,
         [{ text: 'OK', onPress: () => router.back() }]
       );
     } catch (error) {
@@ -232,6 +294,11 @@ export default function QuizViewScreen() {
         quiz={quiz}
         onAnswerSubmit={handleAnswerSubmit}
         currentQuestionIndex={currentQuestionIndex}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        onFlagQuestion={handleFlagQuestion}
+        onSkipQuestion={handleSkipQuestion}
+        isFlagged={flaggedQuestions.has(quiz.questions[currentQuestionIndex]?.questionId)}
       />
 
       {/* Feedback Modal */}

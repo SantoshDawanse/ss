@@ -6,6 +6,7 @@
 
 export const DATABASE_NAME = 'sikshya_sathi.db';
 export const DATABASE_VERSION = 1;
+export const SCHEMA_VERSION = 1; // Current schema version for migrations
 
 /**
  * SQL statements to create all database tables.

@@ -324,6 +324,11 @@ export class BundleImportService {
       }
     }
   private validateRequiredField(obj: any, fieldName: string, expectedType: string): void {
+    // Check if obj is null, undefined, or not an object
+    if (obj === null || obj === undefined || typeof obj !== 'object') {
+      throw new Error(`Cannot validate field ${fieldName}: object is ${obj === null ? 'null' : obj === undefined ? 'undefined' : typeof obj}`);
+    }
+
     if (!(fieldName in obj)) {
       throw new Error(`Bundle missing required field: ${fieldName}`);
     }
@@ -383,7 +388,10 @@ export class BundleImportService {
     }
 
     // study_track is optional, but if present, validate it
-    if (subject.study_track !== undefined) {
+    if (subject.study_track !== undefined && subject.study_track !== null) {
+      if (typeof subject.study_track !== 'object') {
+        throw new Error(`${subjectPrefix}.study_track must be an object, got ${typeof subject.study_track}`);
+      }
       this.validateStudyTrackStructure(subject.study_track, `${subjectPrefix}.study_track`);
     }
   }
@@ -527,7 +535,7 @@ export class BundleImportService {
     try {
       for (const lesson of subject.lessons) {
         await this.dbManager.runSql(
-          `INSERT INTO lessons 
+          `INSERT OR REPLACE INTO lessons 
           (lesson_id, bundle_id, subject, topic, title, difficulty, content_json, estimated_minutes, curriculum_standards)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
@@ -553,7 +561,7 @@ export class BundleImportService {
     try {
       for (const quiz of subject.quizzes) {
         await this.dbManager.runSql(
-          `INSERT INTO quizzes 
+          `INSERT OR REPLACE INTO quizzes 
           (quiz_id, bundle_id, subject, topic, title, difficulty, time_limit, questions_json)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
@@ -580,7 +588,7 @@ export class BundleImportService {
       for (const [quizId, hints] of Object.entries(subject.hints)) {
         for (const hint of hints) {
           await this.dbManager.runSql(
-            `INSERT INTO hints 
+            `INSERT OR REPLACE INTO hints 
             (hint_id, quiz_id, question_id, level, hint_text)
             VALUES (?, ?, ?, ?, ?)`,
             [
@@ -605,7 +613,7 @@ export class BundleImportService {
     if (subject.study_track) {
       try {
         await this.dbManager.runSql(
-          `INSERT INTO study_tracks 
+          `INSERT OR REPLACE INTO study_tracks 
           (track_id, bundle_id, subject, weeks_json)
           VALUES (?, ?, ?, ?)`,
           [

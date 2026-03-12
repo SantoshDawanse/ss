@@ -5,7 +5,7 @@
  */
 
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { Quiz, Question } from '../models';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -17,12 +17,22 @@ interface QuizDisplayProps {
   quiz: Quiz;
   onAnswerSubmit: (questionId: string, answer: string) => void;
   currentQuestionIndex: number;
+  refreshing?: boolean;
+  onRefresh?: () => void;
+  onFlagQuestion?: () => void;
+  onSkipQuestion?: () => void;
+  isFlagged?: boolean;
 }
 
 export const QuizDisplay: React.FC<QuizDisplayProps> = ({
   quiz,
   onAnswerSubmit,
   currentQuestionIndex,
+  refreshing = false,
+  onRefresh,
+  onFlagQuestion,
+  onSkipQuestion,
+  isFlagged = false,
 }) => {
   const [selectedAnswer, setSelectedAnswer] = useState<string>('');
   const [shortAnswer, setShortAnswer] = useState<string>('');
@@ -139,7 +149,19 @@ export const QuizDisplay: React.FC<QuizDisplayProps> = ({
   const progress = ((currentQuestionIndex + 1) / quiz.questions.length) * 100;
 
   return (
-    <ScrollView className="flex-1 bg-neutral-50">
+    <ScrollView 
+      className="flex-1 bg-neutral-50"
+      refreshControl={
+        onRefresh ? (
+          <RefreshControl 
+            refreshing={refreshing} 
+            onRefresh={onRefresh}
+            colors={['#2196F3']}
+            tintColor="#2196F3"
+          />
+        ) : undefined
+      }
+    >
       <View className="p-4">
         {/* Header Card */}
         <Card variant="elevated" padding="lg" style={{ marginBottom: 16 }}>
@@ -162,9 +184,16 @@ export const QuizDisplay: React.FC<QuizDisplayProps> = ({
         {/* Question Card */}
         <Card variant="elevated" padding="lg" style={{ marginBottom: 16 }}>
           <CardHeader>
-            <Badge variant="info" size="sm">
-              Question {currentQuestionIndex + 1}
-            </Badge>
+            <View className="flex-row justify-between items-center">
+              <Badge variant="info" size="sm">
+                Question {currentQuestionIndex + 1}
+              </Badge>
+              {isFlagged && (
+                <Badge variant="warning" size="sm">
+                  🚩 Flagged
+                </Badge>
+              )}
+            </View>
           </CardHeader>
           <CardContent>
             <Text className="text-lg text-neutral-900 leading-7">
@@ -192,6 +221,30 @@ export const QuizDisplay: React.FC<QuizDisplayProps> = ({
             ? 'पेश गर्नुहोस् / Submit'
             : 'समाप्त गर्नुहोस् / Finish'}
         </Button>
+
+        {/* Flag and Skip Buttons */}
+        <View className="flex-row gap-3 mt-3">
+          {onFlagQuestion && (
+            <Button
+              onPress={onFlagQuestion}
+              variant="outline"
+              size="md"
+              style={{ flex: 1 }}
+            >
+              🚩 Flag Question
+            </Button>
+          )}
+          {onSkipQuestion && (
+            <Button
+              onPress={onSkipQuestion}
+              variant="outline"
+              size="md"
+              style={{ flex: 1 }}
+            >
+              Skip →
+            </Button>
+          )}
+        </View>
       </View>
     </ScrollView>
   );

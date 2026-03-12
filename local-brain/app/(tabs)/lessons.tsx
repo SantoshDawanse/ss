@@ -224,19 +224,31 @@ export default function LessonsScreen() {
       </View>
 
       {filteredLessons.length === 0 ? (
-        <View className="flex-1 justify-center items-center px-6">
-          <View className="w-20 h-20 rounded-full bg-neutral-100 items-center justify-center mb-4">
-            <Ionicons name="book-outline" size={40} color="#9E9E9E" />
+        <ScrollView
+          contentContainerStyle={{ flex: 1 }}
+          refreshControl={
+            <RefreshControl 
+              refreshing={refreshing} 
+              onRefresh={onRefresh}
+              colors={['#2196F3']}
+              tintColor="#2196F3"
+            />
+          }
+        >
+          <View className="flex-1 justify-center items-center px-6">
+            <View className="w-20 h-20 rounded-full bg-neutral-100 items-center justify-center mb-4">
+              <Ionicons name="book-outline" size={40} color="#9E9E9E" />
+            </View>
+            <Text className="text-lg font-semibold text-neutral-700 mb-2">
+              {lessons.length === 0 ? 'No lessons available' : 'No lessons match filters'}
+            </Text>
+            <Text className="text-sm text-neutral-500 text-center">
+              {lessons.length === 0 
+                ? 'Pull down to refresh and check for new content'
+                : 'Try adjusting your filters'}
+            </Text>
           </View>
-          <Text className="text-lg font-semibold text-neutral-700 mb-2">
-            {lessons.length === 0 ? 'No lessons available' : 'No lessons match filters'}
-          </Text>
-          <Text className="text-sm text-neutral-500 text-center">
-            {lessons.length === 0 
-              ? 'Check back later for new content'
-              : 'Try adjusting your filters'}
-          </Text>
-        </View>
+        </ScrollView>
       ) : (
         <FlatList
           data={filteredLessons}

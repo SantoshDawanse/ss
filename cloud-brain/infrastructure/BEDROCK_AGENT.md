@@ -7,8 +7,9 @@ The Sikshya-Sathi Cloud Brain uses Amazon Bedrock Agent with Claude 3.5 Sonnet t
 ## Agent Configuration
 
 ### Foundation Model
-- **Model**: `anthropic.claude-3-5-sonnet-20241022-v2:0`
+- **Model**: `us.anthropic.claude-3-5-sonnet-20241022-v2:0` (Cross-region inference profile)
 - **Provider**: Anthropic Claude 3.5 Sonnet
+- **Note**: Uses inference profile for better availability and performance across regions
 
 ### Agent Instructions
 

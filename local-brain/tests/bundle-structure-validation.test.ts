@@ -37,6 +37,7 @@ describe('BundleImportService - Task 7.6: Bundle Structure Validation', () => {
     jest.resetAllMocks();
     
     // Set up fresh mock implementations
+    (FileSystem.readAsStringAsync as jest.Mock).mockClear();
     (FileSystem.deleteAsync as jest.Mock).mockResolvedValue(undefined);
   });
 
@@ -50,12 +51,28 @@ describe('BundleImportService - Task 7.6: Bundle Structure Validation', () => {
     const compressed = pako.gzip(jsonString);
     const base64 = Buffer.from(compressed).toString('base64');
     
-    // Calculate checksum
-    const wordArray = CryptoJS.enc.Base64.parse(base64);
-    const hash = CryptoJS.SHA256(wordArray);
-    const checksum = hash.toString(CryptoJS.enc.Hex);
-    
-    return { base64, checksum };
+    // Calculate checksum using the same method as the service
+    try {
+      const wordArray = CryptoJS.enc.Base64.parse(base64);
+      const hash = CryptoJS.SHA256(wordArray);
+      const checksum = hash.toString(CryptoJS.enc.Hex);
+      
+      if (!checksum) {
+        // Fallback to a simple hash if CryptoJS fails
+        const crypto = require('crypto');
+        const buffer = Buffer.from(base64, 'base64');
+        const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+        return { base64, checksum };
+      }
+      
+      return { base64, checksum };
+    } catch (error) {
+      // Fallback to Node.js crypto if CryptoJS fails
+      const crypto = require('crypto');
+      const buffer = Buffer.from(base64, 'base64');
+      const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+      return { base64, checksum };
+    }
   };
 
   // Valid bundle data template
@@ -513,10 +530,18 @@ describe('BundleImportService - Task 7.6: Bundle Structure Validation', () => {
       delete bundleWithoutStudyTrack.subjects[0].study_track;
 
       const { base64, checksum } = createCompressedBundle(bundleWithoutStudyTrack);
+      
+      // Clear and set up mock
+      (FileSystem.readAsStringAsync as jest.Mock).mockClear();
       (FileSystem.readAsStringAsync as jest.Mock).mockResolvedValue(base64);
 
       try {
         const isValid = await service.validateBundle(mockBundlePath, checksum);
+        if (!isValid) {
+          console.error('Validation returned false for bundle without study track');
+          console.error('Bundle data:', JSON.stringify(bundleWithoutStudyTrack, null, 2));
+          console.error('Checksum:', checksum);
+        }
         expect(isValid).toBe(true);
       } catch (error) {
         console.error('Test failed with error:', error);
@@ -529,7 +554,8 @@ describe('BundleImportService - Task 7.6: Bundle Structure Validation', () => {
     it('should accept valid bundle with all required fields', async () => {
       const { base64, checksum } = createCompressedBundle(validBundleData);
       
-      // Ensure mock is properly set
+      // Clear and set up mock
+      (FileSystem.readAsStringAsync as jest.Mock).mockClear();
       (FileSystem.readAsStringAsync as jest.Mock).mockResolvedValue(base64);
       
       // Verify mock is set correctly
@@ -541,6 +567,11 @@ describe('BundleImportService - Task 7.6: Bundle Structure Validation', () => {
         // Verify the mock was called
         expect(FileSystem.readAsStringAsync).toHaveBeenCalledWith(mockBundlePath, { encoding: 'base64' });
         
+        if (!isValid) {
+          console.error('Validation returned false for valid bundle');
+          console.error('Bundle data:', JSON.stringify(validBundleData, null, 2));
+          console.error('Checksum:', checksum);
+        }
         expect(isValid).toBe(true);
       } catch (error) {
         console.error('Test failed with error:', error);

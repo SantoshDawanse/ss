@@ -439,10 +439,27 @@ export class SyncOrchestratorService {
         this.dbManager.performanceLogRepository.parseLog(row),
       );
     } else if (hasContent) {
-      // Not first-time, has content, and no logs - skip sync
-      console.log('No new logs to upload and bundle with content exists - skipping sync');
-      await this.dbManager.syncSessionRepository.updateLogsUploaded(sessionId, 0);
-      return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
+      // Check if bundle is getting old (more than 7 days) or if student has been active
+      const bundleAge = activeBundle ? Date.now() - new Date(activeBundle.valid_from).getTime() : 0;
+      const bundleAgeDays = bundleAge / (1000 * 60 * 60 * 24);
+      
+      // Check recent activity (lessons completed in last 3 days)
+      const recentActivity = await this.dbManager.executeSql(
+        'SELECT COUNT(*) as count FROM performance_logs WHERE student_id = ? AND event_type = ? AND timestamp > ?',
+        [this.studentId, 'lesson_complete', Date.now() - (3 * 24 * 60 * 60 * 1000)]
+      );
+      const hasRecentActivity = (recentActivity[0]?.count || 0) > 0;
+      
+      if (bundleAgeDays > 7 || hasRecentActivity) {
+        // Bundle is old or student has been active - sync to get fresh content
+        console.log(`Bundle is ${bundleAgeDays.toFixed(1)} days old or student has recent activity - syncing for fresh content`);
+        logs = []; // Send empty logs to trigger new bundle generation
+      } else {
+        // Bundle is fresh and no recent activity - skip sync
+        console.log('Bundle is fresh and no recent activity - skipping sync');
+        await this.dbManager.syncSessionRepository.updateLogsUploaded(sessionId, 0);
+        return { shouldDownload: false, logsUploaded: 0, backendSessionId: sessionId };
+      }
     } else {
       // Bundle without content - send empty array to create session
       console.log('Bundle exists but has no content - re-syncing');
@@ -1176,11 +1193,42 @@ export class SyncOrchestratorService {
     }
 
   /**
-   * Check if sync is needed (has unsynced logs).
+   * Check if sync is needed (has unsynced logs or old bundle).
    */
   public async isSyncNeeded(): Promise<boolean> {
+    // Check for unsynced logs
     const unsyncedCount = await this.dbManager.performanceLogRepository.countUnsynced();
-    return unsyncedCount > 0;
+    if (unsyncedCount > 0) {
+      return true;
+    }
+
+    // Check if bundle is old or if there's recent activity
+    const activeBundle = await this.dbManager.learningBundleRepository.findActiveByStudent(
+      this.studentId
+    );
+
+    if (!activeBundle) {
+      // No bundle - definitely need sync
+      return true;
+    }
+
+    // Check bundle age
+    const bundleAge = Date.now() - new Date(activeBundle.valid_from).getTime();
+    const bundleAgeDays = bundleAge / (1000 * 60 * 60 * 24);
+    
+    if (bundleAgeDays > 7) {
+      // Bundle is old - need sync
+      return true;
+    }
+
+    // Check for recent activity (lessons completed in last 3 days)
+    const recentActivity = await this.dbManager.executeSql(
+      'SELECT COUNT(*) as count FROM performance_logs WHERE student_id = ? AND event_type = ? AND timestamp > ?',
+      [this.studentId, 'lesson_complete', Date.now() - (3 * 24 * 60 * 60 * 1000)]
+    );
+    const hasRecentActivity = (recentActivity[0]?.count || 0) > 0;
+
+    return hasRecentActivity;
   }
 
   /**

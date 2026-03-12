@@ -159,6 +159,20 @@ export class QuizRepository extends BaseRepository<QuizRow> {
    * Parse quiz from row.
    */
   parseQuiz(row: QuizRow): Quiz {
+    const rawQuestions = JSON.parse(row.questions_json);
+    
+    // Transform snake_case fields to camelCase
+    const questions: Question[] = rawQuestions.map((q: any) => ({
+      questionId: q.question_id || q.questionId,
+      type: q.question_type || q.type,
+      question: q.question,
+      options: q.options,
+      correctAnswer: q.correct_answer || q.correctAnswer,
+      explanation: q.explanation,
+      curriculumStandard: q.curriculum_standard || q.curriculumStandard,
+      bloomLevel: q.bloom_level || q.bloomLevel || 1,
+    }));
+
     return {
       quizId: row.quiz_id,
       subject: row.subject,
@@ -166,7 +180,7 @@ export class QuizRepository extends BaseRepository<QuizRow> {
       title: row.title,
       difficulty: row.difficulty,
       timeLimit: row.time_limit || undefined,
-      questions: JSON.parse(row.questions_json) as Question[],
+      questions,
     };
   }
 }

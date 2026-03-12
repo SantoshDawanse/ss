@@ -181,14 +181,16 @@ def upload(event: dict, context: LambdaContext) -> dict:
             )
 
         # Calculate checksum (convert PerformanceLog objects to dicts for JSON serialization)
-        logs_dict = [log.model_dump() if hasattr(log, 'model_dump') else log for log in performance_logs]
+        # Use mode='json' to ensure datetime objects are serialized to ISO format strings
+        logs_dict = [log.model_dump(mode='json') if hasattr(log, 'model_dump') else log for log in performance_logs]
         logs_json = json.dumps(logs_dict, sort_keys=True, default=str)
         checksum = hashlib.sha256(logs_json.encode()).hexdigest()
 
-        # Store upload data
+        # Store upload data - use logs_dict (serialized) instead of logs_data (raw with datetime objects)
+        # This ensures DynamoDB can serialize the data properly
         upload_data = SyncUploadData(
-            performance_logs=logs_data,
-            compressed_size=len(json.dumps(logs_dict, default=str)),
+            performance_logs=logs_dict,  # Use serialized dicts with datetime as strings
+            compressed_size=len(logs_json),
             checksum=checksum,
         )
         sync_repo.update_upload_data(session.session_id, upload_data)

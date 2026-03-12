@@ -29,21 +29,55 @@ export class SyncSessionRepository extends BaseRepository<SyncSessionRow> {
    */
   public async create(session: SyncSessionRow): Promise<void> {
     try {
-      await this.execute(
-        `INSERT INTO ${this.tableName} 
-        (session_id, backend_session_id, start_time, end_time, status, logs_uploaded, bundle_downloaded, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          session.session_id,
-          session.backend_session_id,
-          session.start_time,
-          session.end_time,
-          session.status,
-          session.logs_uploaded,
-          session.bundle_downloaded,
-          session.error_message,
-        ],
-      );
+      // First, check if backend_session_id column exists
+      const db = this.dbManager.getDatabase();
+      const columns = await db.getAllAsync('PRAGMA table_info(sync_sessions)');
+      const hasBackendSessionId = columns.some((col: any) => col.name === 'backend_session_id');
+      
+      if (hasBackendSessionId) {
+        // Use the full INSERT with backend_session_id
+        await this.execute(
+          `INSERT INTO ${this.tableName} 
+          (session_id, backend_session_id, start_time, end_time, status, logs_uploaded, bundle_downloaded, error_message)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            session.session_id,
+            session.backend_session_id,
+            session.start_time,
+            session.end_time,
+            session.status,
+            session.logs_uploaded,
+            session.bundle_downloaded,
+            session.error_message,
+          ],
+        );
+      } else {
+        // Fallback: INSERT without backend_session_id column
+        console.warn('[SyncSessionRepository] backend_session_id column not found, using fallback INSERT');
+        await this.execute(
+          `INSERT INTO ${this.tableName} 
+          (session_id, start_time, end_time, status, logs_uploaded, bundle_downloaded, error_message)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            session.session_id,
+            session.start_time,
+            session.end_time,
+            session.status,
+            session.logs_uploaded,
+            session.bundle_downloaded,
+            session.error_message,
+          ],
+        );
+        
+        // If backend_session_id was provided, try to update it separately
+        if (session.backend_session_id) {
+          try {
+            await this.updateBackendSessionId(session.session_id, session.backend_session_id);
+          } catch (updateError) {
+            console.warn('[SyncSessionRepository] Could not update backend_session_id:', updateError);
+          }
+        }
+      }
     } catch (error) {
       console.error('Error creating sync session:', error);
       throw new Error(`Failed to create sync session: ${error}`);
@@ -79,6 +113,16 @@ export class SyncSessionRepository extends BaseRepository<SyncSessionRow> {
     backendSessionId: string,
   ): Promise<void> {
     try {
+      // Check if backend_session_id column exists
+      const db = this.dbManager.getDatabase();
+      const columns = await db.getAllAsync('PRAGMA table_info(sync_sessions)');
+      const hasBackendSessionId = columns.some((col: any) => col.name === 'backend_session_id');
+      
+      if (!hasBackendSessionId) {
+        console.warn('[SyncSessionRepository] backend_session_id column not found, cannot update');
+        return;
+      }
+      
       await this.execute(
         `UPDATE ${this.tableName} 
         SET backend_session_id = ? 

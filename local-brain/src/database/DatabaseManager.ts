@@ -24,6 +24,7 @@ import {
   StudyTrackRepository,
   DownloadProgressRepository,
 } from './repositories';
+import { runMigrations } from './migrations';
 
 type SQLiteDatabase = SQLite.SQLiteDatabase;
 
@@ -123,6 +124,9 @@ export class DatabaseManager {
 
       // Create indexes
       await this.createIndexes();
+
+      // Run any pending migrations
+      await runMigrations(this.db);
 
       // Initialize connection pool
       await this.initializeConnectionPool();

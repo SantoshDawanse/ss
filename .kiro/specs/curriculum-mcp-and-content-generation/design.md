@@ -246,7 +246,7 @@ def get_learning_progression(
 
 #### 2.1 Agent Configuration
 
-**Foundation Model**: `anthropic.claude-3-5-sonnet-20241022-v2:0`
+**Foundation Model**: `us.anthropic.claude-3-5-sonnet-20241022-v2:0` (Cross-region inference profile)
 
 **Agent Instructions**:
 ```
@@ -1959,7 +1959,7 @@ class CurriculumMCPStack(Stack):
         bedrock_agent = bedrock.CfnAgent(
             self, "ContentGenerationAgent",
             agent_name="sikshya-sathi-content-generator",
-            foundation_model="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            foundation_model="us.anthropic.claude-3-5-sonnet-20241022-v2:0",
             instruction=AGENT_INSTRUCTIONS,
             agent_resource_role_arn=agent_role.role_arn
         )

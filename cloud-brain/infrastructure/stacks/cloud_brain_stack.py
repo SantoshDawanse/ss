@@ -41,15 +41,15 @@ class CloudBrainStack(Stack):
         # S3 Bucket for learning bundles
         self.bundles_bucket = self._create_bundles_bucket()
 
-        # Bedrock Agent IAM Role (commented out - not needed for dashboard)
-        # self.bedrock_agent_role = self._create_bedrock_agent_role()
+        # Bedrock Agent IAM Role
+        self.bedrock_agent_role = self._create_bedrock_agent_role()
 
         # Lambda Functions
-        # self.mcp_server_handler = self._create_mcp_server_handler()
+        self.mcp_server_handler = self._create_mcp_server_handler()
         
-        # Bedrock Agent and Action Groups (commented out - not needed for dashboard)
-        # self.bedrock_agent = self._create_bedrock_agent()
-        # self.mcp_action_group = self._create_mcp_action_group()
+        # Bedrock Agent and Action Groups
+        self.bedrock_agent = self._create_bedrock_agent()
+        self.mcp_action_group = self._create_mcp_action_group()
         
         # self.content_generation_handler = self._create_content_generation_handler()
         self.sync_upload_handler = self._create_sync_upload_handler()
@@ -249,6 +249,9 @@ class CloudBrainStack(Stack):
         
         Uses Claude 3.5 Sonnet model with instructions for generating
         personalized learning materials aligned with Nepal K-12 curriculum.
+        
+        Note: Falls back to environment variables if Bedrock Agent service
+        is not available in the current region.
         """
         # Agent instructions for curriculum-aligned content generation
         agent_instructions = """You are an expert educational content generator for Sikshya-Sathi, creating personalized 
@@ -276,23 +279,61 @@ Content structure requirements:
 Always validate your generated content against curriculum standards using the validate_content_alignment tool
 to ensure at least 70% alignment score before finalizing."""
 
-        # Create Bedrock Agent using L1 construct (CfnAgent)
-        agent = CfnResource(
-            self,
-            "BedrockAgent",
-            type="AWS::Bedrock::Agent",
-            properties={
-                "AgentName": f"sikshya-sathi-content-generator-{self.env_name}",
-                "AgentResourceRoleArn": self.bedrock_agent_role.role_arn,
-                "FoundationModel": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-                "Instruction": agent_instructions,
-                "Description": "Bedrock Agent for generating curriculum-aligned educational content for Sikshya-Sathi",
-                "IdleSessionTTLInSeconds": 600,  # 10 minutes
-                "PrepareAgent": True,  # Automatically prepare the agent
-            },
-        )
-        
-        return agent
+        try:
+            # Create Bedrock Agent using L1 construct (CfnAgent)
+            agent = CfnResource(
+                self,
+                "BedrockAgent",
+                type="AWS::Bedrock::Agent",
+                properties={
+                    "AgentName": f"sikshya-sathi-content-generator-{self.env_name}",
+                    "AgentResourceRoleArn": self.bedrock_agent_role.role_arn,
+                    "FoundationModel": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    "Instruction": agent_instructions,
+                    "Description": "Bedrock Agent for generating curriculum-aligned educational content for Sikshya-Sathi",
+                    "IdleSessionTTLInSeconds": 600,  # 10 minutes
+                    # Note: PrepareAgent is not supported in CloudFormation, agent will be prepared automatically
+                },
+            )
+            
+            # Create Agent Alias for stable endpoint
+            self.bedrock_agent_alias = CfnResource(
+                self,
+                "BedrockAgentAlias",
+                type="AWS::Bedrock::AgentAlias",
+                properties={
+                    "AgentId": agent.get_att("AgentId"),
+                    "AgentAliasName": f"sikshya-sathi-alias-{self.env_name}",
+                    "Description": "Stable alias for Sikshya-Sathi content generation agent",
+                },
+            )
+            
+            return agent
+            
+        except Exception as e:
+            # If Bedrock Agent resources are not available, create a placeholder
+            # The Lambda functions will fall back to progressive mock content
+            print(f"Warning: Bedrock Agent resources not available: {e}")
+            print("Falling back to environment variable configuration for agent IDs")
+            
+            # Create a dummy resource that won't fail deployment
+            # The actual agent configuration will be handled via environment variables
+            placeholder = CfnResource(
+                self,
+                "BedrockAgentPlaceholder",
+                type="AWS::CloudFormation::WaitConditionHandle",
+                properties={},
+            )
+            
+            # Create a placeholder alias as well
+            self.bedrock_agent_alias = CfnResource(
+                self,
+                "BedrockAgentAliasPlaceholder", 
+                type="AWS::CloudFormation::WaitConditionHandle",
+                properties={},
+            )
+            
+            return placeholder
 
     def _create_mcp_action_group(self) -> CfnResource:
         """Create action group connecting Bedrock Agent to MCP Server Lambda.
@@ -302,159 +343,215 @@ to ensure at least 70% alignment score before finalizing."""
         - get_topic_details: Get detailed topic information
         - validate_content_alignment: Validate content against standards
         - get_learning_progression: Get topic sequence and dependencies
+        
+        Note: Creates placeholder if Bedrock Agent resources are not available.
         """
         # Grant Bedrock Agent permission to invoke MCP Server Lambda
         self.mcp_server_handler.grant_invoke(self.bedrock_agent_role)
         
-        # Define API schema for the action group
-        # This describes the four MCP tools that Bedrock Agent can call
-        api_schema = {
-            "openapi": "3.0.0",
-            "info": {
-                "title": "MCP Server Curriculum Tools API",
-                "version": "1.0.0",
-                "description": "API for accessing Nepal K-12 curriculum data and validation tools"
-            },
-            "paths": {
-                "/get_curriculum_standards": {
-                    "post": {
-                        "summary": "Get curriculum standards for a specific grade and subject",
-                        "description": "Returns all curriculum standards with learning objectives, prerequisites, Bloom level, and estimated hours",
-                        "operationId": "getCurriculumStandards",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "grade": {
-                                                "type": "integer",
-                                                "description": "Grade level (6-8)",
-                                                "minimum": 6,
-                                                "maximum": 8
-                                            },
-                                            "subject": {
-                                                "type": "string",
-                                                "description": "Subject name",
-                                                "enum": ["Mathematics", "Science", "Social Studies"]
+        # Check if we have a real Bedrock Agent or placeholder
+        if hasattr(self.bedrock_agent, 'get_att') and 'AgentId' in str(self.bedrock_agent.get_att):
+            try:
+                # Define API schema for the action group
+                # This describes the four MCP tools that Bedrock Agent can call
+                api_schema = {
+                    "openapi": "3.0.0",
+                    "info": {
+                        "title": "MCP Server Curriculum Tools API",
+                        "version": "1.0.0",
+                        "description": "API for accessing Nepal K-12 curriculum data and validation tools"
+                    },
+                    "paths": {
+                        "/get_curriculum_standards": {
+                            "post": {
+                                "summary": "Get curriculum standards for a specific grade and subject",
+                                "description": "Returns all curriculum standards with learning objectives, prerequisites, Bloom level, and estimated hours",
+                                "operationId": "getCurriculumStandards",
+                                "requestBody": {
+                                    "required": True,
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "grade": {
+                                                        "type": "integer",
+                                                        "description": "Grade level (6-8)",
+                                                        "minimum": 6,
+                                                        "maximum": 8
+                                                    },
+                                                    "subject": {
+                                                        "type": "string",
+                                                        "description": "Subject name",
+                                                        "enum": ["Mathematics", "Science", "Social Studies"]
+                                                    }
+                                                },
+                                                "required": ["grade", "subject"]
                                             }
-                                        },
-                                        "required": ["grade", "subject"]
+                                        }
                                     }
-                                }
-                            }
-                        },
-                        "responses": {
-                            "200": {
-                                "description": "List of curriculum standards",
-                                "content": {
-                                    "application/json": {
-                                        "schema": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object"
+                                },
+                                "responses": {
+                                    "200": {
+                                        "description": "List of curriculum standards",
+                                        "content": {
+                                            "application/json": {
+                                                "schema": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object"
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                    }
-                },
-                "/get_topic_details": {
-                    "post": {
-                        "summary": "Get comprehensive information about a specific curriculum topic",
-                        "description": "Returns detailed topic information including assessment criteria, subtopics, and resources",
-                        "operationId": "getTopicDetails",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "topic_id": {
-                                                "type": "string",
-                                                "description": "Unique topic identifier (e.g., MATH-6-001)"
-                                            }
-                                        },
-                                        "required": ["topic_id"]
-                                    }
-                                }
-                            }
                         },
-                        "responses": {
-                            "200": {
-                                "description": "Topic details",
-                                "content": {
-                                    "application/json": {
-                                        "schema": {
-                                            "type": "object"
+                        "/get_topic_details": {
+                            "post": {
+                                "summary": "Get comprehensive information about a specific curriculum topic",
+                                "description": "Returns detailed topic information including assessment criteria, subtopics, and resources",
+                                "operationId": "getTopicDetails",
+                                "requestBody": {
+                                    "required": True,
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "topic_id": {
+                                                        "type": "string",
+                                                        "description": "Unique topic identifier (e.g., MATH-6-001)"
+                                                    }
+                                                },
+                                                "required": ["topic_id"]
+                                            }
+                                        }
+                                    }
+                                },
+                                "responses": {
+                                    "200": {
+                                        "description": "Topic details",
+                                        "content": {
+                                            "application/json": {
+                                                "schema": {
+                                                    "type": "object"
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                    }
-                },
-                "/validate_content_alignment": {
-                    "post": {
-                        "summary": "Validate generated content alignment with curriculum standards",
-                        "description": "Returns alignment score, matched standards, gaps, and recommendations",
-                        "operationId": "validateContentAlignment",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "content": {
-                                                "type": "string",
-                                                "description": "Generated lesson or quiz content"
-                                            },
-                                            "target_standards": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "string"
+                        },
+                        "/validate_content_alignment": {
+                            "post": {
+                                "summary": "Validate generated content alignment with curriculum standards",
+                                "description": "Returns alignment score, matched standards, gaps, and recommendations",
+                                "operationId": "validateContentAlignment",
+                                "requestBody": {
+                                    "required": True,
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "content": {
+                                                        "type": "string",
+                                                        "description": "Generated lesson or quiz content"
+                                                    },
+                                                    "target_standards": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "string"
+                                                        },
+                                                        "description": "List of target standard IDs"
+                                                    }
                                                 },
-                                                "description": "List of target standard IDs"
+                                                "required": ["content", "target_standards"]
                                             }
-                                        },
-                                        "required": ["content", "target_standards"]
+                                        }
+                                    }
+                                },
+                                "responses": {
+                                    "200": {
+                                        "description": "Content alignment result",
+                                        "content": {
+                                            "application/json": {
+                                                "schema": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "alignment_score": {
+                                                            "type": "number"
+                                                        },
+                                                        "matched_standards": {
+                                                            "type": "array",
+                                                            "items": {
+                                                                "type": "string"
+                                                            }
+                                                        },
+                                                        "gaps": {
+                                                            "type": "array",
+                                                            "items": {
+                                                                "type": "string"
+                                                            }
+                                                        },
+                                                        "recommendations": {
+                                                            "type": "array",
+                                                            "items": {
+                                                                "type": "string"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         },
-                        "responses": {
-                            "200": {
-                                "description": "Content alignment result",
-                                "content": {
-                                    "application/json": {
-                                        "schema": {
-                                            "type": "object",
-                                            "properties": {
-                                                "alignment_score": {
-                                                    "type": "number"
-                                                },
-                                                "matched_standards": {
-                                                    "type": "array",
-                                                    "items": {
-                                                        "type": "string"
+                        "/get_learning_progression": {
+                            "post": {
+                                "summary": "Get learning progression showing topic sequence and dependencies",
+                                "description": "Returns topic sequence, dependencies, and difficulty progression for a subject and grade range",
+                                "operationId": "getLearningProgression",
+                                "requestBody": {
+                                    "required": True,
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "subject": {
+                                                        "type": "string",
+                                                        "description": "Subject name",
+                                                        "enum": ["Mathematics", "Science", "Social Studies"]
+                                                    },
+                                                    "grade_start": {
+                                                        "type": "integer",
+                                                        "description": "Starting grade",
+                                                        "minimum": 6,
+                                                        "maximum": 8
+                                                    },
+                                                    "grade_end": {
+                                                        "type": "integer",
+                                                        "description": "Ending grade",
+                                                        "minimum": 6,
+                                                        "maximum": 8
                                                     }
                                                 },
-                                                "gaps": {
-                                                    "type": "array",
-                                                    "items": {
-                                                        "type": "string"
-                                                    }
-                                                },
-                                                "recommendations": {
-                                                    "type": "array",
-                                                    "items": {
-                                                        "type": "string"
-                                                    }
+                                                "required": ["subject", "grade_start", "grade_end"]
+                                            }
+                                        }
+                                    }
+                                },
+                                "responses": {
+                                    "200": {
+                                        "description": "Learning progression",
+                                        "content": {
+                                            "application/json": {
+                                                "schema": {
+                                                    "type": "object"
                                                 }
                                             }
                                         }
@@ -463,83 +560,47 @@ to ensure at least 70% alignment score before finalizing."""
                             }
                         }
                     }
-                },
-                "/get_learning_progression": {
-                    "post": {
-                        "summary": "Get learning progression showing topic sequence and dependencies",
-                        "description": "Returns topic sequence, dependencies, and difficulty progression for a subject and grade range",
-                        "operationId": "getLearningProgression",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "subject": {
-                                                "type": "string",
-                                                "description": "Subject name",
-                                                "enum": ["Mathematics", "Science", "Social Studies"]
-                                            },
-                                            "grade_start": {
-                                                "type": "integer",
-                                                "description": "Starting grade",
-                                                "minimum": 6,
-                                                "maximum": 8
-                                            },
-                                            "grade_end": {
-                                                "type": "integer",
-                                                "description": "Ending grade",
-                                                "minimum": 6,
-                                                "maximum": 8
-                                            }
-                                        },
-                                        "required": ["subject", "grade_start", "grade_end"]
-                                    }
-                                }
-                            }
-                        },
-                        "responses": {
-                            "200": {
-                                "description": "Learning progression",
-                                "content": {
-                                    "application/json": {
-                                        "schema": {
-                                            "type": "object"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
-            }
-        }
+                
+                # Create action group using L1 construct (CfnAgentActionGroup)
+                action_group = CfnResource(
+                    self,
+                    "MCPActionGroup",
+                    type="AWS::Bedrock::AgentActionGroup",
+                    properties={
+                        "ActionGroupName": "mcp-curriculum-tools",
+                        "AgentId": self.bedrock_agent.get_att("AgentId").to_string(),
+                        "AgentVersion": "DRAFT",
+                        "Description": "Action group for accessing MCP Server curriculum tools",
+                        "ActionGroupExecutor": {
+                            "Lambda": self.mcp_server_handler.function_arn
+                        },
+                        "ApiSchema": {
+                            "Payload": str(api_schema)
+                        },
+                        "ActionGroupState": "ENABLED",
+                    },
+                )
+                
+                # Ensure action group is created after agent
+                action_group.node.add_dependency(self.bedrock_agent)
+                
+                return action_group
+                
+            except Exception as e:
+                print(f"Warning: Could not create Bedrock Agent Action Group: {e}")
+                # Fall through to placeholder creation
         
-        # Create action group using L1 construct (CfnAgentActionGroup)
-        action_group = CfnResource(
+        # Create placeholder if Bedrock Agent resources are not available
+        print("Creating placeholder for MCP Action Group - MCP Server will be available via direct Lambda invocation")
+        placeholder = CfnResource(
             self,
-            "MCPActionGroup",
-            type="AWS::Bedrock::AgentActionGroup",
-            properties={
-                "ActionGroupName": "mcp-curriculum-tools",
-                "AgentId": self.bedrock_agent.get_att("AgentId").to_string(),
-                "AgentVersion": "DRAFT",
-                "Description": "Action group for accessing MCP Server curriculum tools",
-                "ActionGroupExecutor": {
-                    "Lambda": self.mcp_server_handler.function_arn
-                },
-                "ApiSchema": {
-                    "Payload": str(api_schema)
-                },
-                "ActionGroupState": "ENABLED",
-            },
+            "MCPActionGroupPlaceholder",
+            type="AWS::CloudFormation::WaitConditionHandle",
+            properties={},
         )
         
-        # Ensure action group is created after agent
-        action_group.node.add_dependency(self.bedrock_agent)
-        
-        return action_group
+        return placeholder
 
     def _create_mcp_server_handler(self) -> lambda_.Function:
         """Create Lambda function for MCP Server.
@@ -621,6 +682,7 @@ to ensure at least 70% alignment score before finalizing."""
                 "BUNDLES_BUCKET": self.bundles_bucket.bucket_name,
                 "BEDROCK_AGENT_ROLE_ARN": self.bedrock_agent_role.role_arn,
                 "BEDROCK_AGENT_ID": self.bedrock_agent.get_att("AgentId").to_string(),
+                "BEDROCK_AGENT_ALIAS_ID": self.bedrock_agent_alias.get_att("AgentAliasId").to_string(),
                 "POWERTOOLS_SERVICE_NAME": "content-generation",
                 "POWERTOOLS_METRICS_NAMESPACE": "SikshyaSathi/CloudBrain",
                 "LOG_LEVEL": "INFO" if self.env_name == "production" else "DEBUG",
@@ -692,6 +754,9 @@ to ensure at least 70% alignment score before finalizing."""
                 "POWERTOOLS_SERVICE_NAME": "sync-upload",
                 "POWERTOOLS_METRICS_NAMESPACE": "SikshyaSathi/CloudBrain",
                 "LOG_LEVEL": "INFO" if self.env_name == "production" else "DEBUG",
+                # Bedrock Agent configuration - will be set to actual values if agent is created
+                "BEDROCK_AGENT_ID": self._get_bedrock_agent_id_for_env(),
+                "BEDROCK_AGENT_ALIAS_ID": self._get_bedrock_agent_alias_id_for_env(),
             },
         )
 
@@ -700,6 +765,21 @@ to ensure at least 70% alignment score before finalizing."""
         self.bundles_table.grant_read_write_data(handler)
         self.sync_sessions_table.grant_read_write_data(handler)
         self.knowledge_model_table.grant_read_write_data(handler)
+        
+        # Grant Bedrock Agent invocation permissions
+        handler.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "bedrock-agent-runtime:InvokeAgent",
+                    "bedrock-agent:GetAgent",
+                    "bedrock-agent:ListAgents",
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                ],
+                resources=["*"],
+            )
+        )
         
         # Grant CloudWatch metrics permissions
         handler.add_to_role_policy(
@@ -1287,38 +1367,75 @@ to ensure at least 70% alignment score before finalizing."""
 
     def _create_outputs(self) -> None:
         """Create CloudFormation outputs."""
-        # Bedrock outputs commented out - not needed for dashboard
-        # CfnOutput(
-        #     self,
-        #     "MCPServerLambdaArn",
-        #     value=self.mcp_server_handler.function_arn,
-        #     description="Lambda function ARN for MCP Server",
-        #     export_name=f"sikshya-sathi-mcp-server-arn-{self.env_name}",
-        # )
+        CfnOutput(
+            self,
+            "MCPServerLambdaArn",
+            value=self.mcp_server_handler.function_arn,
+            description="Lambda function ARN for MCP Server",
+            export_name=f"sikshya-sathi-mcp-server-arn-{self.env_name}",
+        )
 
-        # CfnOutput(
-        #     self,
-        #     "BedrockAgentRoleArn",
-        #     value=self.bedrock_agent_role.role_arn,
-        #     description="IAM Role ARN for Bedrock Agent",
-        #     export_name=f"sikshya-sathi-bedrock-role-{self.env_name}",
-        # )
+        CfnOutput(
+            self,
+            "BedrockAgentRoleArn",
+            value=self.bedrock_agent_role.role_arn,
+            description="IAM Role ARN for Bedrock Agent",
+            export_name=f"sikshya-sathi-bedrock-role-{self.env_name}",
+        )
         
-        # CfnOutput(
-        #     self,
-        #     "BedrockAgentId",
-        #     value=self.bedrock_agent.get_att("AgentId").to_string(),
-        #     description="Bedrock Agent ID for content generation",
-        #     export_name=f"sikshya-sathi-bedrock-agent-id-{self.env_name}",
-        # )
-        
-        # CfnOutput(
-        #     self,
-        #     "BedrockAgentArn",
-        #     value=self.bedrock_agent.get_att("AgentArn").to_string(),
-        #     description="Bedrock Agent ARN for content generation",
-        #     export_name=f"sikshya-sathi-bedrock-agent-arn-{self.env_name}",
-        # )
+        # Only create agent outputs if we have real Bedrock Agent resources
+        try:
+            if hasattr(self.bedrock_agent, 'get_att') and 'AgentId' in str(self.bedrock_agent.get_att):
+                CfnOutput(
+                    self,
+                    "BedrockAgentId",
+                    value=self.bedrock_agent.get_att("AgentId").to_string(),
+                    description="Bedrock Agent ID for content generation",
+                    export_name=f"sikshya-sathi-bedrock-agent-id-{self.env_name}",
+                )
+                
+                CfnOutput(
+                    self,
+                    "BedrockAgentAliasId",
+                    value=self.bedrock_agent_alias.get_att("AgentAliasId").to_string(),
+                    description="Bedrock Agent Alias ID for stable endpoint",
+                    export_name=f"sikshya-sathi-bedrock-agent-alias-id-{self.env_name}",
+                )
+            else:
+                # Create placeholder outputs for environment variable configuration
+                CfnOutput(
+                    self,
+                    "BedrockAgentId",
+                    value="CONFIGURE_VIA_ENVIRONMENT_VARIABLE",
+                    description="Bedrock Agent ID - configure via BEDROCK_AGENT_ID environment variable",
+                    export_name=f"sikshya-sathi-bedrock-agent-id-{self.env_name}",
+                )
+                
+                CfnOutput(
+                    self,
+                    "BedrockAgentAliasId",
+                    value="CONFIGURE_VIA_ENVIRONMENT_VARIABLE",
+                    description="Bedrock Agent Alias ID - configure via BEDROCK_AGENT_ALIAS_ID environment variable",
+                    export_name=f"sikshya-sathi-bedrock-agent-alias-id-{self.env_name}",
+                )
+        except Exception as e:
+            print(f"Warning: Could not create Bedrock Agent outputs: {e}")
+            # Create placeholder outputs
+            CfnOutput(
+                self,
+                "BedrockAgentId",
+                value="CONFIGURE_VIA_ENVIRONMENT_VARIABLE",
+                description="Bedrock Agent ID - configure via BEDROCK_AGENT_ID environment variable",
+                export_name=f"sikshya-sathi-bedrock-agent-id-{self.env_name}",
+            )
+            
+            CfnOutput(
+                self,
+                "BedrockAgentAliasId",
+                value="CONFIGURE_VIA_ENVIRONMENT_VARIABLE",
+                description="Bedrock Agent Alias ID - configure via BEDROCK_AGENT_ALIAS_ID environment variable",
+                export_name=f"sikshya-sathi-bedrock-agent-alias-id-{self.env_name}",
+            )
 
         CfnOutput(
             self,
@@ -1343,3 +1460,23 @@ to ensure at least 70% alignment score before finalizing."""
             description="SNS topic ARN for CloudWatch alarms",
             export_name=f"sikshya-sathi-alarm-topic-{self.env_name}",
         )
+
+    def _get_bedrock_agent_id_for_env(self) -> str:
+        """Get Bedrock Agent ID for environment variables."""
+        try:
+            if hasattr(self.bedrock_agent, 'get_att') and 'AgentId' in str(self.bedrock_agent.get_att):
+                return self.bedrock_agent.get_att("AgentId").to_string()
+            else:
+                return ""  # Empty string will cause BedrockAgentService to fall back to mock content
+        except Exception:
+            return ""  # Empty string will cause BedrockAgentService to fall back to mock content
+
+    def _get_bedrock_agent_alias_id_for_env(self) -> str:
+        """Get Bedrock Agent Alias ID for environment variables."""
+        try:
+            if hasattr(self.bedrock_agent_alias, 'get_att') and 'AgentAliasId' in str(self.bedrock_agent_alias.get_att):
+                return self.bedrock_agent_alias.get_att("AgentAliasId").to_string()
+            else:
+                return "TSTALIASID"  # Default alias ID
+        except Exception:
+            return "TSTALIASID"  # Default alias ID
